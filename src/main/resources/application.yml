@@ -1,0 +1,43 @@
+spring:
+  application:
+    name: on-safe-backend
+  profiles:
+    active: local
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+  config:
+    import: optional:application-secret.yml
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+server:
+  port: 8080
+
+firebase:
+  credentials: ${FIREBASE_CREDENTIALS:serviceAccountKey.json}
+  storage:
+    bucket: ${FIREBASE_STORAGE_BUCKET:}
+
+jwt:
+  secret: ${JWT_SECRET:}
+  access-token-expiry: 3600000
+  refresh-token-expiry: 604800000
+
+encryption:
+  aes-key: ${ENCRYPTION_AES_KEY:}
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /api-docs
+
+aws:
+  ses:
+    region: ${AWS_REGION:ap-northeast-2}
+    from: ${SES_FROM_EMAIL:}
+
+logging:
+  level:
+    com.onsafe: DEBUG

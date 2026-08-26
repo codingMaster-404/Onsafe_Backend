@@ -1,0 +1,10 @@
+# Terraform 상태·플랜·시크릿
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+override.tf
+override.tf.json
+*.auto.tfvars

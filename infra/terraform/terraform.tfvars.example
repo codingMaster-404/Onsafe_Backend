@@ -1,0 +1,17 @@
+# 실제 값으로 채운 뒤 terraform.tfvars 로 복사 (git 커밋 금지)
+project_id      = "on-safe-f1667"
+region          = "asia-northeast3"
+gcs_bucket_name = "on-safe-f1667.appspot.com"
+
+# GitHub 리포지토리 — Workload Identity Federation 대상
+github_repository = "codingMaster-404/Onsafe_Backend"
+
+# 필요 시 오버라이드
+# artifact_registry_repo = "onsafe"
+# cloud_run_sa_id        = "onsafe-cloudrun"
+# redis_instance_id      = "onsafe-redis"
+# redis_memory_size_gb   = 1
+# redis_tier             = "BASIC"
+# vpc_network            = "default"
+# vpc_connector_name     = "onsafe-connector"
+# vpc_connector_ip_cidr  = "10.8.0.0/28"

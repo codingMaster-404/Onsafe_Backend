@@ -1,0 +1,33 @@
+# 빌드 컨텍스트에서 제외 — 이미지 크기 및 보안
+
+# 보안 민감 파일 (volume 으로 주입)
+serviceAccountKey.json
+.env
+*.env
+local.properties
+src/main/resources/application-secret.yml
+
+# IDE / Gradle 캐시
+.idea/
+.gradle/
+*.iml
+
+# 빌드 산출물
+build/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.class
+.pytest_cache/
+
+# 문서 파일 (이미지에 불필요) — requirements.txt 는 제외 대상에서 명시적으로 복원
+*.txt
+!requirements.txt
+*.md
+
+# 미사용 스크립트
+spring_client.py
+
+# Android 클라이언트 소스 (백엔드 이미지에 불필요)
+app/src/main/java/
+app/src/main/res/

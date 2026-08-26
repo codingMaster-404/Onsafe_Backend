@@ -1,0 +1,88 @@
+services:
+
+  # ── Python AI 서버 (FastAPI + XGBoost + Firebase Storage) ────────────────
+  python-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    container_name: onsafe-python-ai
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379
+      FIREBASE_CREDENTIALS: /app/secrets/serviceAccountKey.json
+      FIREBASE_STORAGE_BUCKET: ${FIREBASE_STORAGE_BUCKET:?FIREBASE_STORAGE_BUCKET must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      KOTLIN_INTERNAL_BASE: http://kotlin-api:8080
+    volumes:
+      - ./serviceAccountKey.json:/app/secrets/serviceAccountKey.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.urlopen('http://localhost:8000/health'); import json; d=json.loads(r.read()); exit(0 if d['status']=='ok' else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - onsafe-network
+    restart: unless-stopped
+
+  # ── Kotlin Spring Boot API ────────────────────────────────────────────────
+  kotlin-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.kotlin
+    container_name: onsafe-kotlin-api
+    ports:
+      - "8080:8080"
+    environment:
+      FIREBASE_CREDENTIALS: /app/secrets/serviceAccountKey.json
+      FIREBASE_STORAGE_BUCKET: ${FIREBASE_STORAGE_BUCKET:?FIREBASE_STORAGE_BUCKET must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ENCRYPTION_AES_KEY: ${ENCRYPTION_AES_KEY:?ENCRYPTION_AES_KEY must be set (base64-encoded 32 bytes, e.g. openssl rand -base64 32)}
+      SPRING_PROFILES_ACTIVE: docker
+      AWS_REGION: ${AWS_REGION:-ap-northeast-2}
+      SES_FROM_EMAIL: ${SES_FROM_EMAIL:?SES_FROM_EMAIL must be set}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      - ./serviceAccountKey.json:/app/secrets/serviceAccountKey.json:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - onsafe-network
+    restart: unless-stopped
+
+  # ── Redis (프레임 버퍼 · 점수 캐시 · 인증코드 임시 저장) ──────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: onsafe-redis
+    ports:
+      - "6379:6379"
+    # AOF 영속성: 컨테이너 재시작 후에도 데이터 복구
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - onsafe-network
+    restart: unless-stopped
+
+networks:
+  onsafe-network:
+    driver: bridge
+
+volumes:
+  redis-data:
