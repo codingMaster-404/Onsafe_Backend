@@ -53,6 +53,16 @@ class AuthService(
         }
     }
 
+    // 자동 로그인 진입 전 서버 검증용 — 로컬 30일 제한만으로는 회원탈퇴·강제로그아웃 후에도
+    // 로컬 토큰이 살아있으면 진입이 가능해지므로, 만료/서명뿐 아니라 Redis 블랙리스트도 확인한다.
+    suspend fun validateAccessToken(accessToken: String?) {
+        if (accessToken.isNullOrBlank() || !jwtProvider.validate(accessToken)) {
+            throw BusinessException(ErrorCode.INVALID_TOKEN)
+        }
+        val blacklisted = redis.opsForValue().get("bl:$accessToken").awaitFirstOrNull()
+        if (blacklisted != null) throw BusinessException(ErrorCode.INVALID_TOKEN)
+    }
+
     suspend fun checkId(request: CheckIdRequest) {
         if (userRepository.existsByUserId(request.userId)) {
             throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)

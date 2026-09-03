@@ -294,4 +294,44 @@ class AuthServiceTest {
         assertTrue(thrown is BusinessException)
         assertEquals(ErrorCode.USER_ID_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
     }
+
+    // ── 액세스 토큰 검증 (자동 로그인) ─────────────────────────────
+
+    @Test
+    fun `토큰 검증 - 토큰이 null이거나 blank면 INVALID_TOKEN`() = runTest {
+        val thrown = runCatching { authService.validateAccessToken(null) }.exceptionOrNull()
+        assertTrue(thrown is BusinessException)
+        assertEquals(ErrorCode.INVALID_TOKEN, (thrown as BusinessException).errorCode)
+
+        val thrownBlank = runCatching { authService.validateAccessToken("   ") }.exceptionOrNull()
+        assertTrue(thrownBlank is BusinessException)
+        assertEquals(ErrorCode.INVALID_TOKEN, (thrownBlank as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `토큰 검증 - JwtProvider validate 실패 시 INVALID_TOKEN`() = runTest {
+        every { jwtProvider.validate("bad.token") } returns false
+
+        val thrown = runCatching { authService.validateAccessToken("bad.token") }.exceptionOrNull()
+        assertTrue(thrown is BusinessException)
+        assertEquals(ErrorCode.INVALID_TOKEN, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `토큰 검증 - Redis 블랙리스트에 있으면 INVALID_TOKEN`() = runTest {
+        every { jwtProvider.validate("blacklisted.token") } returns true
+        every { valueOps.get("bl:blacklisted.token") } returns Mono.just("1")
+
+        val thrown = runCatching { authService.validateAccessToken("blacklisted.token") }.exceptionOrNull()
+        assertTrue(thrown is BusinessException)
+        assertEquals(ErrorCode.INVALID_TOKEN, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `토큰 검증 - 유효 토큰 + 블랙리스트 없음이면 예외 없이 통과`() = runTest {
+        every { jwtProvider.validate("good.token") } returns true
+        every { valueOps.get("bl:good.token") } returns Mono.empty()
+
+        authService.validateAccessToken("good.token")
+    }
 }
