@@ -1,0 +1,198 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - '.env.example'
+      - 'infra/**'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '배포 대상'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - kotlin-only
+          - python-only
+
+concurrency:
+  group: deploy-cloudrun
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write  # Workload Identity Federation OIDC 토큰 발급용
+
+env:
+  GCP_REGION: asia-northeast3
+  ARTIFACT_REPO: onsafe
+  KOTLIN_SERVICE: onsafe-kotlin-api
+  PYTHON_SERVICE: onsafe-python-ai
+  KOTLIN_IMAGE_NAME: kotlin-api
+  PYTHON_IMAGE_NAME: python-ai
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. Kotlin API 배포 (public, allow-unauthenticated)
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy-kotlin:
+    if: github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'kotlin-only'
+    runs-on: ubuntu-latest
+    outputs:
+      kotlin_url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: onsafe-deployer@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build & Push Kotlin image
+        run: |
+          IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.KOTLIN_IMAGE_NAME }}"
+          docker build -f Dockerfile.kotlin \
+            -t "$IMAGE_URI:${{ github.sha }}" \
+            -t "$IMAGE_URI:latest" \
+            .
+          docker push "$IMAGE_URI:${{ github.sha }}"
+          docker push "$IMAGE_URI:latest"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Deploy Kotlin API to Cloud Run
+        id: deploy
+        run: |
+          gcloud run deploy ${{ env.KOTLIN_SERVICE }} \
+            --image "${IMAGE_URI}:${{ github.sha }}" \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --service-account "onsafe-cloudrun@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
+            --vpc-connector onsafe-connector \
+            --vpc-egress private-ranges-only \
+            --port 8080 \
+            --memory 1Gi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 10 \
+            --timeout 300 \
+            --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379,AWS_REGION=${{ vars.AWS_REGION }},SES_FROM_EMAIL=${{ vars.SES_FROM_EMAIL }}" \
+            --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest" \
+            --quiet
+
+          URL=$(gcloud run services describe ${{ env.KOTLIN_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
+          echo "Kotlin API URL: $URL"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. Python AI 배포 (internal only, Kotlin URL 을 env로 주입)
+  # ────────────────────────────────────────────────────────────────────────────
+  deploy-python:
+    needs: [ deploy-kotlin ]
+    # deploy-kotlin이 성공 or skipped(python-only 옵션 등)이면 진행
+    if: |
+      always() &&
+      (needs.deploy-kotlin.result == 'success' || needs.deploy-kotlin.result == 'skipped') &&
+      (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'python-only')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: onsafe-deployer@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Resolve Kotlin service URL
+        id: kotlin_url
+        run: |
+          if [ -n "${{ needs.deploy-kotlin.outputs.kotlin_url }}" ]; then
+            URL="${{ needs.deploy-kotlin.outputs.kotlin_url }}"
+          else
+            URL=$(gcloud run services describe ${{ env.KOTLIN_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
+          fi
+          echo "Kotlin URL: $URL"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Build & Push Python image
+        run: |
+          IMAGE_URI="${{ env.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.PYTHON_IMAGE_NAME }}"
+          docker build -f Dockerfile.python \
+            -t "$IMAGE_URI:${{ github.sha }}" \
+            -t "$IMAGE_URI:latest" \
+            .
+          docker push "$IMAGE_URI:${{ github.sha }}"
+          docker push "$IMAGE_URI:latest"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Deploy Python AI to Cloud Run (internal)
+        run: |
+          gcloud run deploy ${{ env.PYTHON_SERVICE }} \
+            --image "${IMAGE_URI}:${{ github.sha }}" \
+            --region ${{ env.GCP_REGION }} \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --ingress internal-and-cloud-load-balancing \
+            --service-account "onsafe-cloudrun@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
+            --vpc-connector onsafe-connector \
+            --vpc-egress all-traffic \
+            --port 8000 \
+            --memory 2Gi \
+            --cpu 2 \
+            --min-instances 0 \
+            --max-instances 5 \
+            --timeout 600 \
+            --set-env-vars "TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_URL=redis://${{ vars.REDIS_HOST }}:6379,KOTLIN_INTERNAL_BASE=${{ steps.kotlin_url.outputs.url }}" \
+            --set-secrets "JWT_SECRET=JWT_SECRET:latest" \
+            --quiet
+
+          URL=$(gcloud run services describe ${{ env.PYTHON_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
+          echo "Python AI URL (internal): $URL"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 3. 배포 후 헬스체크
+  # ────────────────────────────────────────────────────────────────────────────
+  smoke-test:
+    needs: [ deploy-kotlin, deploy-python ]
+    if: always() && needs.deploy-kotlin.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Health check - Kotlin API
+        run: |
+          URL="${{ needs.deploy-kotlin.outputs.kotlin_url }}"
+          echo "Pinging $URL/actuator/health"
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL/actuator/health" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Kotlin API healthy"
+              exit 0
+            fi
+            echo "  attempt $i: HTTP $STATUS, retrying in 10s..."
+            sleep 10
+          done
+          echo "Kotlin API health check failed"
+          exit 1
