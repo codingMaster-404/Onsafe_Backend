@@ -68,6 +68,13 @@ class AuthController(private val authService: AuthService) {
         return ApiResponse.ok(message = "사용 가능한 아이디입니다.")
     }
 
+    @Operation(summary = "이메일 중복확인")
+    @PostMapping("/check-mail")
+    suspend fun checkMail(@Valid @RequestBody request: CheckMailRequest): ApiResponse<Unit> {
+        authService.checkMail(request)
+        return ApiResponse.ok(message = "사용 가능한 이메일입니다.")
+    }
+
     @Operation(summary = "회원가입 이메일 인증코드 발송")
     @PostMapping("/send-email-code")
     suspend fun sendEmailCode(@Valid @RequestBody request: SendEmailCodeRequest): ApiResponse<Unit> {
