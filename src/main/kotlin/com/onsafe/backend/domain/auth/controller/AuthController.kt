@@ -102,4 +102,14 @@ class AuthController(private val authService: AuthService) {
         val tokens = authService.refresh(refreshToken)
         return ApiResponse.ok(tokens)
     }
+
+    @Operation(summary = "액세스 토큰 유효성 검증 (자동 로그인용)")
+    @PostMapping("/validate")
+    suspend fun validate(
+        @RequestHeader(value = "Authorization", required = false) authorization: String?
+    ): ApiResponse<Unit> {
+        val accessToken = authorization?.removePrefix("Bearer ")?.trim()
+        authService.validateAccessToken(accessToken)
+        return ApiResponse.ok(message = "유효한 토큰입니다.")
+    }
 }
