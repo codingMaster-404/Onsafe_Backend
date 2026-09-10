@@ -8,10 +8,14 @@ import com.onsafe.backend.common.security.VerificationCodeGenerator
 import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
+import com.onsafe.backend.domain.consent.model.entity.CURRENT_CONSENT_VERSION
+import com.onsafe.backend.domain.consent.model.entity.ConsentType
+import com.onsafe.backend.domain.consent.repository.ConsentRepository
 import com.onsafe.backend.domain.settings.model.entity.UserSettings
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.entity.User
 import com.onsafe.backend.domain.user.repository.UserRepository
+import com.onsafe.backend.common.util.guardRedis
 import kotlinx.coroutines.reactive.awaitFirstOrNull
 import kotlinx.coroutines.reactor.awaitSingle
 import org.slf4j.LoggerFactory
@@ -23,6 +27,7 @@ import java.time.Duration
 private const val EMAIL_CODE_TTL = 180L    // 3분
 private const val RESET_CODE_TTL = 180L    // 3분
 private const val RESET_VERIFIED_TTL = 600L // 10분 — verifyResetCode 성공 후 resetPassword 가능 시간
+private const val EMAIL_VERIFIED_TTL = 900L // 15분 — verifyEmailCode 성공 후 register 가능 시간 (가입 폼 입력 항목이 많아 RESET_VERIFIED_TTL보다 여유를 둠)
 
 @Service
 class AuthService(
@@ -33,6 +38,7 @@ class AuthService(
     private val redis: ReactiveStringRedisTemplate,
     private val loginHistoryRepository: LoginHistoryRepository,
     private val settingsRepository: SettingsRepository,
+    private val consentRepository: ConsentRepository,
     private val rateLimiter: RateLimiter,
     private val verificationCodeGenerator: VerificationCodeGenerator
 ) {
@@ -49,11 +55,15 @@ class AuthService(
     private suspend fun blacklistToken(token: String) {
         val remaining = jwtProvider.getRemainingExpiry(token)
         if (remaining > java.time.Duration.ZERO) {
-            redis.opsForValue().set("bl:$token", "1", remaining).awaitSingle()
+            log.guardRedis("로그아웃 토큰 블랙리스트 저장") {
+                redis.opsForValue().set(jwtProvider.blacklistKey(token), "1", remaining).awaitSingle()
+            }
         }
     }
 
     suspend fun checkId(request: CheckIdRequest) {
+        // 사전 조회 오남용 방지 — 회원가입 UX용이므로 시간당 10회로 넉넉히 허용한다.
+        rateLimiter.requireAllowed("rl:check-id:${request.userId}", limit = 10, windowSec = 3600)
         if (userRepository.existsByUserId(request.userId)) {
             throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
         }
@@ -71,9 +81,11 @@ class AuthService(
         // 이메일 주소당 시간당 3회 — SES 비용 폭탄 및 인박스 스팸 방지.
         rateLimiter.requireAllowed("rl:send-email:${request.mail}", limit = 3, windowSec = 3600)
         val code = verificationCodeGenerator.generate()
-        redis.opsForValue()
-            .set("email_verify:${request.mail}", code, Duration.ofSeconds(EMAIL_CODE_TTL))
-            .awaitSingle()
+        log.guardRedis("email 인증코드 저장") {
+            redis.opsForValue()
+                .set("email_verify:${request.mail}", code, Duration.ofSeconds(EMAIL_CODE_TTL))
+                .awaitSingle()
+        }
         emailService.sendEmailVerificationCode(request.mail, code)
     }
 
@@ -81,10 +93,15 @@ class AuthService(
         // 코드 브루트포스 방지 — 코드 공간이 10^6이라 창당 5회면 성공 확률이 무시할 수준.
         rateLimiter.requireAllowed("rl:verify-email:${request.mail}", limit = 5, windowSec = 3600)
         val key = "email_verify:${request.mail}"
-        val storedCode = redis.opsForValue().get(key).awaitFirstOrNull()
+        val storedCode = log.guardRedis("email 인증코드 조회") { redis.opsForValue().get(key).awaitFirstOrNull() }
             ?: throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
         if (storedCode != request.code) throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
-        redis.delete(key).awaitSingle()
+        log.guardRedis("email 인증코드 삭제 및 완료 플래그 저장") {
+            redis.delete(key).awaitSingle()
+            redis.opsForValue()
+                .set("email_verified:${request.mail}", "1", Duration.ofSeconds(EMAIL_VERIFIED_TTL))
+                .awaitSingle()
+        }
     }
 
     suspend fun sendResetCode(request: SendResetCodeRequest) {
@@ -94,33 +111,51 @@ class AuthService(
         if (user.mail != request.mail) throw BusinessException(ErrorCode.MAIL_NOT_MATCH)
 
         val code = verificationCodeGenerator.generate()
-        redis.opsForValue()
-            .set("reset_code:${request.userId}", code, Duration.ofSeconds(RESET_CODE_TTL))
-            .awaitSingle()
+        log.guardRedis("reset 인증코드 저장") {
+            redis.opsForValue()
+                .set("reset_code:${request.userId}", code, Duration.ofSeconds(RESET_CODE_TTL))
+                .awaitSingle()
+        }
         emailService.sendResetCode(request.mail, code)
     }
 
     suspend fun verifyResetCode(request: VerifyResetCodeRequest) {
         rateLimiter.requireAllowed("rl:verify-reset:${request.userId}", limit = 5, windowSec = 3600)
         val key = "reset_code:${request.userId}"
-        val storedCode = redis.opsForValue().get(key).awaitFirstOrNull()
+        val storedCode = log.guardRedis("reset 인증코드 조회") { redis.opsForValue().get(key).awaitFirstOrNull() }
             ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
         if (storedCode != request.code) throw BusinessException(ErrorCode.INVALID_RESET_CODE)
-        redis.delete(key).awaitSingle()
-        redis.opsForValue()
-            .set("reset_verified:${request.userId}", "1", Duration.ofSeconds(RESET_VERIFIED_TTL))
-            .awaitSingle()
+        log.guardRedis("reset 인증코드 삭제 및 완료 플래그 저장") {
+            redis.delete(key).awaitSingle()
+            redis.opsForValue()
+                .set("reset_verified:${request.userId}", "1", Duration.ofSeconds(RESET_VERIFIED_TTL))
+                .awaitSingle()
+        }
     }
 
-    suspend fun register(request: RegisterRequest) {
+    suspend fun register(request: RegisterRequest, ipAddress: String) {
+        // 이메일 인증 게이트(email_verified 플래그)로 어느 정도 간접 방어되지만, 이미 인증된
+        // 플래그를 재사용한 반복 register() 호출까지는 막지 못해 IP 기준으로 한 번 더 제한한다.
+        rateLimiter.requireAllowed("rl:register:ip:$ipAddress", limit = 10, windowSec = 3600)
         if (userRepository.existsByUserId(request.userId)) {
             throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
         }
         if (userRepository.existsByMail(request.mail)) {
             throw BusinessException(ErrorCode.MAIL_ALREADY_EXISTS)
         }
+        if (userRepository.existsByPhone(request.phone)) {
+            throw BusinessException(ErrorCode.PHONE_ALREADY_EXISTS)
+        }
+        val verifiedKey = "email_verified:${request.mail}"
+        log.guardRedis("email 인증완료 플래그 조회") { redis.opsForValue().get(verifiedKey).awaitFirstOrNull() }
+            ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
+
         val now = java.time.LocalDateTime.now()
-        userRepository.save(
+        // existsByUserId() 사전 체크(136행)는 흔한 경우(이미 존재하는 아이디)를 빠르게 걸러내는
+        // 역할이고, 실제 동시 요청 레이스는 여기 createIfNotExists의 트랜잭션이 최종 방어한다.
+        // users 문서와 settings 문서를 한 트랜잭션으로 묶어, User는 생성됐는데 settings가
+        // 없는 부분 성공 상태가 구조적으로 생기지 않게 한다.
+        val created = userRepository.createIfNotExists(
             User(
                 userId = request.userId,
                 password = passwordEncoder.encode(request.password),
@@ -132,9 +167,24 @@ class AuthService(
                 marketingConsent = request.marketingConsent,
                 marketingConsentAt = if (request.marketingConsent) now else null,
                 marketingConsentWithdrawnAt = null,
-            )
+            ),
+            additionalWrites = listOf(settingsRepository.buildCreateWrite(UserSettings(userId = request.userId))) +
+                consentRepository.buildCreateWrites(
+                    userId = request.userId,
+                    types = listOf(ConsentType.TERMS_OF_SERVICE, ConsentType.PRIVACY_POLICY, ConsentType.SENSITIVE_INFO),
+                    version = CURRENT_CONSENT_VERSION,
+                    agreedAt = now
+                )
         )
-        settingsRepository.save(UserSettings(userId = request.userId))
+        if (!created) throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
+        // 계정(+settings)은 이미 생성 완료된 상태 — 이 플래그 삭제는 뒷정리일 뿐이라 실패해도
+        // register()를 실패로 응답하면 안 된다. 어차피 TTL로 자연 만료되고, 재가입 시도는
+        // existsByUserId()/createIfNotExists()가 별도로 막아준다.
+        runCatching {
+            log.guardRedis("email 인증완료 플래그 삭제") { redis.delete(verifiedKey).awaitSingle() }
+        }.onFailure { e ->
+            log.warn("email 인증완료 플래그 삭제 실패 (TTL로 자연 만료됨) — mail={}, cause={}", request.mail, e.message)
+        }
     }
 
     suspend fun login(request: LoginRequest, ipAddress: String, userAgent: String): LoginResponse {
@@ -193,17 +243,19 @@ class AuthService(
     }
 
     suspend fun refresh(refreshToken: String): TokenResponse {
-        if (!jwtProvider.validate(refreshToken)) {
-            throw BusinessException(ErrorCode.EXPIRED_TOKEN)
+        jwtProvider.getValidationError(refreshToken)?.let { throw BusinessException(it) }
+        val isBlacklisted = log.guardRedis("refresh 토큰 블랙리스트 조회") {
+            redis.opsForValue().get(jwtProvider.blacklistKey(refreshToken)).awaitFirstOrNull()
         }
-        val isBlacklisted = redis.opsForValue().get("bl:$refreshToken").awaitFirstOrNull()
         if (isBlacklisted != null) throw BusinessException(ErrorCode.INVALID_TOKEN)
 
         val tokens = issueTokens(jwtProvider.getUserId(refreshToken), jwtProvider.getEmail(refreshToken))
 
         val remaining = jwtProvider.getRemainingExpiry(refreshToken)
         if (remaining > java.time.Duration.ZERO) {
-            redis.opsForValue().set("bl:$refreshToken", "1", remaining).awaitSingle()
+            log.guardRedis("refresh 토큰 블랙리스트 저장") {
+                redis.opsForValue().set(jwtProvider.blacklistKey(refreshToken), "1", remaining).awaitSingle()
+            }
         }
         return tokens
     }
@@ -217,13 +269,13 @@ class AuthService(
 
     suspend fun resetPassword(request: ResetPasswordRequest) {
         val verifiedKey = "reset_verified:${request.userId}"
-        redis.opsForValue().get(verifiedKey).awaitFirstOrNull()
+        log.guardRedis("reset 완료 플래그 조회") { redis.opsForValue().get(verifiedKey).awaitFirstOrNull() }
             ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
 
         val user = userRepository.findByUserId(request.userId)
             ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
         userRepository.save(user.copy(password = passwordEncoder.encode(request.newPassword)))
-        redis.delete(verifiedKey).awaitSingle()
+        log.guardRedis("reset 완료 플래그 삭제") { redis.delete(verifiedKey).awaitSingle() }
     }
 
     suspend fun updateFcmToken(userId: String, fcmToken: String) {
