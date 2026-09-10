@@ -3,7 +3,7 @@ package com.onsafe.backend.domain.logs.controller
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
-import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
+import com.onsafe.backend.common.security.AccessGuard
 import com.onsafe.backend.domain.logs.model.dto.FallLogResponse
 import com.onsafe.backend.domain.logs.service.FallLogService
 import io.swagger.v3.oas.annotations.Operation
@@ -17,16 +17,11 @@ import org.springframework.web.bind.annotation.*
 @RequestMapping("/api/fall-logs")
 class FallLogController(
     private val fallLogService: FallLogService,
-    private val guardianLinkRepository: GuardianLinkRepository
+    private val accessGuard: AccessGuard
 ) {
 
-    // 조회·확인 처리는 본인 또는 guardian_links로 연결된 보호자까지 허용한다.
-    // 삭제·영상 업로드는 카메라 기기를 쥔 본인 계정만 가능해야 하므로 이 헬퍼를 쓰지 않는다.
-    private suspend fun requireOwnerOrGuardian(principal: String, userId: String) {
-        if (principal == userId) return
-        if (guardianLinkRepository.exists(principal, userId)) return
-        throw BusinessException(ErrorCode.FORBIDDEN)
-    }
+    // 삭제·영상 업로드는 카메라 기기를 쥔 본인 계정만 가능해야 하므로 accessGuard를 쓰지 않고
+    // principal != userId로 직접 막는다(아래 deleteLog/getUploadUrl/completeVideoUpload).
 
     @Operation(
         summary = "낙상 로그 목록 조회",
@@ -39,7 +34,7 @@ class FallLogController(
         @AuthenticationPrincipal principal: String,
         @RequestParam(required = false) level: String?
     ): ApiResponse<Map<String, List<FallLogResponse>>> {
-        requireOwnerOrGuardian(principal, userId)
+        accessGuard.requireOwnerOrGuardian(principal, userId)
         return ApiResponse.ok(mapOf("logs" to fallLogService.getLogs(userId, level)))
     }
 
@@ -49,7 +44,7 @@ class FallLogController(
         @PathVariable userId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<Map<String, Int>> {
-        requireOwnerOrGuardian(principal, userId)
+        accessGuard.requireOwnerOrGuardian(principal, userId)
         return ApiResponse.ok(fallLogService.getLogCounts(userId))
     }
 
@@ -60,7 +55,7 @@ class FallLogController(
         @PathVariable logId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<FallLogResponse> {
-        requireOwnerOrGuardian(principal, userId)
+        accessGuard.requireOwnerOrGuardian(principal, userId)
         return ApiResponse.ok(fallLogService.getLog(userId, logId))
     }
 
@@ -75,7 +70,7 @@ class FallLogController(
         @PathVariable logId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<FallLogResponse> {
-        requireOwnerOrGuardian(principal, userId)
+        accessGuard.requireOwnerOrGuardian(principal, userId)
         return ApiResponse.ok(fallLogService.confirmLog(userId, logId), "낙상 이벤트를 확인 처리했습니다.")
     }
 
@@ -102,7 +97,7 @@ class FallLogController(
         @PathVariable logId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<Map<String, String>> {
-        requireOwnerOrGuardian(principal, userId)
+        accessGuard.requireOwnerOrGuardian(principal, userId)
         val signedUrl = fallLogService.getSignedUrl(userId, logId)
         return ApiResponse.ok(mapOf("signed_url" to signedUrl))
     }
