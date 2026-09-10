@@ -59,6 +59,14 @@ class AuthService(
         }
     }
 
+    suspend fun checkMail(request: CheckMailRequest) {
+        // 사전 조회 오남용 방지 — 회원가입 UX용이므로 시간당 10회로 넉넉히 허용한다.
+        rateLimiter.requireAllowed("rl:check-mail:${request.mail}", limit = 10, windowSec = 3600)
+        if (userRepository.existsByMail(request.mail)) {
+            throw BusinessException(ErrorCode.MAIL_ALREADY_EXISTS)
+        }
+    }
+
     suspend fun sendEmailCode(request: SendEmailCodeRequest) {
         // 이메일 주소당 시간당 3회 — SES 비용 폭탄 및 인박스 스팸 방지.
         rateLimiter.requireAllowed("rl:send-email:${request.mail}", limit = 3, windowSec = 3600)

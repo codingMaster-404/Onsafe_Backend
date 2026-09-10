@@ -294,4 +294,25 @@ class AuthServiceTest {
         assertTrue(thrown is BusinessException)
         assertEquals(ErrorCode.USER_ID_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
     }
+
+    // ── 이메일 중복 확인 ──────────────────────────────────────────
+
+    @Test
+    fun `이메일 중복 확인 - 이미 존재하는 이메일이면 MAIL_ALREADY_EXISTS 예외 발생`() = runTest {
+        coEvery { userRepository.existsByMail("test@example.com") } returns true
+
+        val thrown = runCatching {
+            authService.checkMail(CheckMailRequest(mail = "test@example.com"))
+        }.exceptionOrNull()
+
+        assertTrue(thrown is BusinessException)
+        assertEquals(ErrorCode.MAIL_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `이메일 중복 확인 - 사용 가능한 이메일이면 예외 없이 통과`() = runTest {
+        coEvery { userRepository.existsByMail("new@example.com") } returns false
+
+        authService.checkMail(CheckMailRequest(mail = "new@example.com"))
+    }
 }
