@@ -73,10 +73,10 @@ class EmailService(
             ).await()
         } catch (e: SdkClientException) {
             log.error("SES 연결 실패 (수신: $to): ${e.message}", e)
-            throw BusinessException(ErrorCode.MAIL_SEND_FAILED)
+            throw BusinessException(ErrorCode.MAIL_SEND_FAILED, e)
         } catch (e: SesV2Exception) {
             log.warn("SES 발송 거부 (수신: $to, 코드: ${e.statusCode()}): ${e.awsErrorDetails()?.errorMessage()}")
-            throw BusinessException(ErrorCode.MAIL_SEND_FAILED)
+            throw BusinessException(ErrorCode.MAIL_SEND_FAILED, e)
         }
     }
 }

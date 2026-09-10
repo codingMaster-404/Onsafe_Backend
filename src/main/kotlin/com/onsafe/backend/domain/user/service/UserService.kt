@@ -5,6 +5,7 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.storage.StorageService
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
+import com.onsafe.backend.domain.consent.repository.ConsentRepository
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
@@ -29,7 +30,8 @@ class UserService(
     private val realtimeDataRepository: RealtimeDataRepository,
     private val storageService: StorageService,
     private val notificationRepository: NotificationRepository,
-    private val guardianLinkRepository: GuardianLinkRepository
+    private val guardianLinkRepository: GuardianLinkRepository,
+    private val consentRepository: ConsentRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -108,7 +110,8 @@ class UserService(
                 "settings" to suspend { settingsRepository.deleteByUserId(userId) },
                 "notifications(본인)" to suspend { notificationRepository.deleteByUserId(userId) },
                 "notifications(보호자 사본)" to suspend { notificationRepository.deleteByLogIds(logIds) },
-                "guardian_links" to suspend { guardianLinkRepository.deleteAllInvolving(userId) }
+                "guardian_links" to suspend { guardianLinkRepository.deleteAllInvolving(userId) },
+                "consents" to suspend { consentRepository.deleteByUserId(userId) }
             )
             deletions.map { (name, delete) ->
                 async {

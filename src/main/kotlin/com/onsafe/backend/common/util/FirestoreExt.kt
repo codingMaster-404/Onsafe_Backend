@@ -22,6 +22,24 @@ suspend fun Firestore.deleteInBatches(refs: List<DocumentReference>) {
     }
 }
 
+// primary 문서가 이미 존재하면 아무것도 쓰지 않고 false를 반환하고, 존재하지 않으면 primary와
+// others를 같은 트랜잭션으로 함께 생성하고 true를 반환한다. 서로 다른 컬렉션에 걸친 "생성 시
+// 함께 만들어져야 하는" 문서 묶음(예: 회원가입의 users + settings)을 부분 성공 없이 원자적으로
+// 만들 때 쓴다. Firestore 트랜잭션 제약상 모든 읽기가 쓰기보다 먼저 와야 하므로 존재 확인을
+// 가장 먼저 수행한다.
+suspend fun Firestore.createAllIfNotExists(
+    primary: DocumentReference,
+    primaryData: Map<String, Any?>,
+    vararg others: Pair<DocumentReference, Map<String, Any?>>
+): Boolean = runTransaction { tx ->
+    val exists = tx.get(primary).get().exists()
+    if (!exists) {
+        tx.set(primary, primaryData)
+        others.forEach { (ref, data) -> tx.set(ref, data) }
+    }
+    !exists
+}.await()
+
 fun LocalDateTime.toTimestamp(): Timestamp =
     Timestamp.of(Date.from(atZone(ZoneId.systemDefault()).toInstant()))
 

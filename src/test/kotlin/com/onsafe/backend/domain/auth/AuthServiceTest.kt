@@ -10,6 +10,7 @@ import com.onsafe.backend.domain.auth.model.entity.LoginHistory
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.auth.service.AuthService
 import com.onsafe.backend.domain.auth.service.EmailService
+import com.onsafe.backend.domain.consent.repository.ConsentRepository
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.entity.User
 import com.onsafe.backend.domain.user.repository.UserRepository
@@ -40,6 +41,7 @@ class AuthServiceTest {
     private val valueOps: ReactiveValueOperations<String, String> = mockk()
     private val loginHistoryRepository: LoginHistoryRepository = mockk()
     private val settingsRepository: SettingsRepository = mockk()
+    private val consentRepository: ConsentRepository = mockk()
     private val rateLimiter: RateLimiter = mockk()
     private lateinit var authService: AuthService
 
@@ -60,7 +62,7 @@ class AuthServiceTest {
         coEvery { rateLimiter.requireAllowed(any(), any(), any()) } just Runs
         authService = AuthService(
             userRepository, passwordEncoder, jwtProvider, emailService, redis,
-            loginHistoryRepository, settingsRepository, rateLimiter, VerificationCodeGenerator()
+            loginHistoryRepository, settingsRepository, consentRepository, rateLimiter, VerificationCodeGenerator()
         )
     }
 
@@ -99,7 +101,8 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "a@b.com", phone = "010-1234-5678")
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "a@b.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                "127.0.0.1"
             )
         }.exceptionOrNull()
 
@@ -114,12 +117,48 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678")
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                "127.0.0.1"
             )
         }.exceptionOrNull()
 
         assertTrue(thrown is BusinessException)
         assertEquals(ErrorCode.MAIL_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `회원가입 - 중복 전화번호면 PHONE_ALREADY_EXISTS 예외 발생`() = runTest {
+        coEvery { userRepository.existsByUserId("testUser") } returns false
+        coEvery { userRepository.existsByMail("test@example.com") } returns false
+        coEvery { userRepository.existsByPhone("010-1234-5678") } returns true
+
+        val thrown = runCatching {
+            authService.register(
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                "127.0.0.1"
+            )
+        }.exceptionOrNull()
+
+        assertTrue(thrown is BusinessException)
+        assertEquals(ErrorCode.PHONE_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `회원가입 - 이메일 인증을 완료하지 않았으면 EMAIL_NOT_VERIFIED 예외 발생`() = runTest {
+        coEvery { userRepository.existsByUserId("testUser") } returns false
+        coEvery { userRepository.existsByMail("test@example.com") } returns false
+        coEvery { userRepository.existsByPhone("010-1234-5678") } returns false
+        every { valueOps.get("email_verified:test@example.com") } returns Mono.empty()
+
+        val thrown = runCatching {
+            authService.register(
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                "127.0.0.1"
+            )
+        }.exceptionOrNull()
+
+        assertTrue(thrown is BusinessException)
+        assertEquals(ErrorCode.EMAIL_NOT_VERIFIED, (thrown as BusinessException).errorCode)
     }
 
     // ── 아이디 찾기 ───────────────────────────────────────────────

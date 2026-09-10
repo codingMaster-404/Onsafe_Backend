@@ -1,6 +1,8 @@
 package com.onsafe.backend.common.security
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import com.onsafe.backend.common.exception.ErrorCode
+import com.onsafe.backend.common.response.ApiResponse
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
@@ -16,7 +18,8 @@ import reactor.core.publisher.Mono
 @Component
 class JwtAuthenticationFilter(
     private val jwtProvider: JwtProvider,
-    private val redis: ReactiveStringRedisTemplate
+    private val redis: ReactiveStringRedisTemplate,
+    private val objectMapper: ObjectMapper
 ) : WebFilter {
 
     override fun filter(exchange: ServerWebExchange, chain: WebFilterChain): Mono<Void> {
@@ -50,8 +53,8 @@ class JwtAuthenticationFilter(
         val response = exchange.response
         response.statusCode = errorCode.status
         response.headers.contentType = MediaType.APPLICATION_JSON
-        val body = """{"success":false,"message":"${errorCode.message}","data":null}"""
-        val buffer = response.bufferFactory().wrap(body.toByteArray(Charsets.UTF_8))
+        val bytes = objectMapper.writeValueAsBytes(ApiResponse.fail<Nothing>(errorCode.message))
+        val buffer = response.bufferFactory().wrap(bytes)
         return response.writeWith(Mono.just(buffer))
     }
 

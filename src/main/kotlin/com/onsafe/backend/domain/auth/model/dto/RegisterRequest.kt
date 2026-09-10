@@ -2,6 +2,8 @@ package com.onsafe.backend.domain.auth.model.dto
 
 import com.fasterxml.jackson.databind.PropertyNamingStrategies
 import com.fasterxml.jackson.databind.annotation.JsonNaming
+import jakarta.validation.constraints.AssertTrue
+import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
@@ -24,6 +26,7 @@ data class RegisterRequest(
     val name: String,
 
     @field:NotBlank(message = "이메일을 입력해주세요.")
+    @field:Email(message = "이메일 형식이 올바르지 않습니다.")
     val mail: String,
 
     @field:Pattern(regexp = "^01[016789]-?\\d{3,4}-?\\d{4}$", message = "전화번호 형식이 올바르지 않습니다.")
@@ -32,6 +35,15 @@ data class RegisterRequest(
     val address: String? = null,
 
     val addressDetail: String? = null,
+
+    @field:AssertTrue(message = "이용약관에 동의해주세요.")
+    val termsAgreed: Boolean,
+
+    @field:AssertTrue(message = "개인정보 수집·이용에 동의해주세요.")
+    val privacyPolicyAgreed: Boolean,
+
+    @field:AssertTrue(message = "민감정보(건강·위치 데이터) 처리에 동의해주세요.")
+    val sensitiveInfoAgreed: Boolean,
 
     val marketingConsent: Boolean = false
 )

@@ -76,10 +76,10 @@ class NotificationService(
             } else {
                 log.warn("FCM 전송 실패 (userId: ${request.userId}): ${e.message}")
             }
-            throw BusinessException(ErrorCode.FCM_SEND_FAILED)
+            throw BusinessException(ErrorCode.FCM_SEND_FAILED, e)
         } catch (e: Exception) {
             log.warn("FCM 전송 실패 (userId: ${request.userId}): ${e.message}")
-            throw BusinessException(ErrorCode.FCM_SEND_FAILED)
+            throw BusinessException(ErrorCode.FCM_SEND_FAILED, e)
         }
     }
 
