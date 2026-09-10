@@ -31,7 +31,7 @@ class JwtAuthenticationFilter(
 
         val userId = jwtProvider.getUserId(token)
 
-        return redis.opsForValue().get("bl:$token")
+        return redis.opsForValue().get(jwtProvider.blacklistKey(token))
             .defaultIfEmpty("")
             .flatMap { blacklisted ->
                 if (blacklisted.isNotEmpty()) {

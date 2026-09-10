@@ -243,11 +243,23 @@ class AuthServiceTest {
     // ── 토큰 갱신 ────────────────────────────────────────────────
 
     @Test
-    fun `토큰 갱신 - 유효하지 않은 토큰이면 EXPIRED_TOKEN 예외 발생`() = runTest {
-        every { jwtProvider.validate("invalid-token") } returns false
+    fun `토큰 갱신 - 서명 위조 등 무효 토큰이면 INVALID_TOKEN 예외 발생`() = runTest {
+        every { jwtProvider.getValidationError("invalid-token") } returns ErrorCode.INVALID_TOKEN
 
         val thrown = runCatching {
             authService.refresh("invalid-token")
+        }.exceptionOrNull()
+
+        assertTrue(thrown is BusinessException)
+        assertEquals(ErrorCode.INVALID_TOKEN, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `토큰 갱신 - 만료된 토큰이면 EXPIRED_TOKEN 예외 발생`() = runTest {
+        every { jwtProvider.getValidationError("expired-token") } returns ErrorCode.EXPIRED_TOKEN
+
+        val thrown = runCatching {
+            authService.refresh("expired-token")
         }.exceptionOrNull()
 
         assertTrue(thrown is BusinessException)
@@ -256,8 +268,9 @@ class AuthServiceTest {
 
     @Test
     fun `토큰 갱신 - 블랙리스트 토큰이면 INVALID_TOKEN 예외 발생`() = runTest {
-        every { jwtProvider.validate("blacklisted-token") } returns true
-        every { valueOps.get("bl:blacklisted-token") } returns Mono.just("1")
+        every { jwtProvider.getValidationError("blacklisted-token") } returns null
+        every { jwtProvider.blacklistKey("blacklisted-token") } returns "bl:hashed-blacklisted-token"
+        every { valueOps.get("bl:hashed-blacklisted-token") } returns Mono.just("1")
 
         val thrown = runCatching {
             authService.refresh("blacklisted-token")
@@ -309,8 +322,8 @@ class AuthServiceTest {
     }
 
     @Test
-    fun `토큰 검증 - JwtProvider validate 실패 시 INVALID_TOKEN`() = runTest {
-        every { jwtProvider.validate("bad.token") } returns false
+    fun `토큰 검증 - JwtProvider 검증 실패 시 INVALID_TOKEN`() = runTest {
+        every { jwtProvider.getValidationError("bad.token") } returns ErrorCode.INVALID_TOKEN
 
         val thrown = runCatching { authService.validateAccessToken("bad.token") }.exceptionOrNull()
         assertTrue(thrown is BusinessException)
@@ -319,8 +332,9 @@ class AuthServiceTest {
 
     @Test
     fun `토큰 검증 - Redis 블랙리스트에 있으면 INVALID_TOKEN`() = runTest {
-        every { jwtProvider.validate("blacklisted.token") } returns true
-        every { valueOps.get("bl:blacklisted.token") } returns Mono.just("1")
+        every { jwtProvider.getValidationError("blacklisted.token") } returns null
+        every { jwtProvider.blacklistKey("blacklisted.token") } returns "bl:hashed-blacklisted.token"
+        every { valueOps.get("bl:hashed-blacklisted.token") } returns Mono.just("1")
 
         val thrown = runCatching { authService.validateAccessToken("blacklisted.token") }.exceptionOrNull()
         assertTrue(thrown is BusinessException)
@@ -329,8 +343,9 @@ class AuthServiceTest {
 
     @Test
     fun `토큰 검증 - 유효 토큰 + 블랙리스트 없음이면 예외 없이 통과`() = runTest {
-        every { jwtProvider.validate("good.token") } returns true
-        every { valueOps.get("bl:good.token") } returns Mono.empty()
+        every { jwtProvider.getValidationError("good.token") } returns null
+        every { jwtProvider.blacklistKey("good.token") } returns "bl:hashed-good.token"
+        every { valueOps.get("bl:hashed-good.token") } returns Mono.empty()
 
         authService.validateAccessToken("good.token")
     }
