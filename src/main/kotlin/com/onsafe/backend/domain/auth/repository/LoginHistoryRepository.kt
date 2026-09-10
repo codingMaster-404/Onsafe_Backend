@@ -35,6 +35,17 @@ class LoginHistoryRepository(private val firestore: Firestore) {
         return docs.size.toLong()
     }
 
+    // 정기 정리 잡용 — cutoff 이전 이력을 최대 [limit]개까지 삭제하고 삭제 건수 반환.
+    // 한 회 실행에 처리량 상한을 두는 이유는 GCP 비용 예측 가능성 + Cloud Run 실행시간 제한 때문.
+    // 잔여분은 다음 실행에서 이어서 처리된다 (90일 보관 정책상 일일 델타는 크지 않음).
+    suspend fun deleteOlderThan(cutoff: LocalDateTime, limit: Int = 1000): Int {
+        val docs = col.whereLessThan("timestamp", cutoff.toTimestamp())
+            .limit(limit)
+            .get().await().documents
+        docs.forEach { it.reference.delete().await() }
+        return docs.size
+    }
+
     private fun DocumentSnapshot.toLoginHistory() = LoginHistory(
         historyId = id,
         userId = getString("user_id") ?: "",
