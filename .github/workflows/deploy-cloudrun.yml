@@ -91,7 +91,7 @@ jobs:
             --max-instances 10 \
             --timeout 300 \
             --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379,AWS_REGION=${{ vars.AWS_REGION }},SES_FROM_EMAIL=${{ vars.SES_FROM_EMAIL }}" \
-            --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest" \
+            --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest" \
             --quiet
 
           URL=$(gcloud run services describe ${{ env.KOTLIN_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
@@ -182,17 +182,19 @@ jobs:
 
     steps:
       - name: Health check - Kotlin API
+        # Cloud Run 콜드스타트가 수분 걸릴 수 있어(첫 배포·이미지 최초 pull 시) 5회 × 10초로는
+        # 정상 배포도 실패로 판정될 여지가 크다. 총 5분 대기로 늘려 잘못된 red 를 줄인다.
         run: |
           URL="${{ needs.deploy-kotlin.outputs.kotlin_url }}"
           echo "Pinging $URL/actuator/health"
-          for i in 1 2 3 4 5; do
+          for i in $(seq 1 20); do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL/actuator/health" || echo "000")
             if [ "$STATUS" = "200" ]; then
               echo "Kotlin API healthy"
               exit 0
             fi
-            echo "  attempt $i: HTTP $STATUS, retrying in 10s..."
-            sleep 10
+            echo "  attempt $i/20: HTTP $STATUS, retrying in 15s..."
+            sleep 15
           done
           echo "Kotlin API health check failed"
           exit 1

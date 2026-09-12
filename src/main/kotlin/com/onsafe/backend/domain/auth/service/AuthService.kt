@@ -63,11 +63,15 @@ class AuthService(
 
     // 자동 로그인 진입 전 서버 검증용 — 로컬 30일 제한만으로는 회원탈퇴·강제로그아웃 후에도
     // 로컬 토큰이 살아있으면 진입이 가능해지므로, 만료/서명뿐 아니라 Redis 블랙리스트도 확인한다.
+    // 만료(EXPIRED)와 서명 무효(INVALID)를 그대로 구분해 던져야 클라이언트가 refresh 시도 vs
+    // 강제 로그아웃을 나눠 처리할 수 있다 — 뭉개면 30일 자동로그인 정책이 access token 만료
+    // 주기(1시간)마다 사실상 리셋된다.
     suspend fun validateAccessToken(accessToken: String?) {
-        if (accessToken.isNullOrBlank() || jwtProvider.getValidationError(accessToken) != null) {
-            throw BusinessException(ErrorCode.INVALID_TOKEN)
+        if (accessToken.isNullOrBlank()) throw BusinessException(ErrorCode.INVALID_TOKEN)
+        jwtProvider.getValidationError(accessToken)?.let { throw BusinessException(it) }
+        val blacklisted = log.guardRedis("access token 블랙리스트 조회") {
+            redis.opsForValue().get(jwtProvider.blacklistKey(accessToken)).awaitFirstOrNull()
         }
-        val blacklisted = redis.opsForValue().get(jwtProvider.blacklistKey(accessToken)).awaitFirstOrNull()
         if (blacklisted != null) throw BusinessException(ErrorCode.INVALID_TOKEN)
     }
 
