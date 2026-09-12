@@ -45,6 +45,12 @@ enum class ErrorCode(
     PAIRING_CODE_INVALID(HttpStatus.BAD_REQUEST, "유효하지 않은 페어링 코드입니다. 코드가 만료되었거나 올바르지 않습니다."),
     SELF_PAIRING_NOT_ALLOWED(HttpStatus.BAD_REQUEST, "본인 계정은 페어링할 수 없습니다."),
     PAIRING_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 연결된 계정입니다."),
+    GUARDIAN_ALREADY_HAS_WARD(HttpStatus.CONFLICT, "이미 다른 피보호자와 연결되어 있습니다. 기존 연결을 해제한 뒤 다시 시도해주세요."),
+    ELDER_ALREADY_HAS_GUARDIAN(HttpStatus.CONFLICT, "이미 다른 보호자와 연결되어 있습니다. 기존 연결을 해제한 뒤 다시 시도해주세요."),
+    // 역할 배타성 위반 — 한 계정은 보호자 또는 피보호자 중 하나로만 활동할 수 있음
+    ROLE_CONFLICT_ALREADY_ELDER(HttpStatus.CONFLICT, "이미 피보호자로 연결된 계정입니다. 보호자 역할로 사용할 수 없습니다."),
+    ROLE_CONFLICT_ALREADY_GUARDIAN(HttpStatus.CONFLICT, "이미 보호자로 연결된 계정입니다. 피보호자 역할로 사용할 수 없습니다."),
+    PAIRING_REQUEST_INVALID(HttpStatus.BAD_REQUEST, "유효하지 않은 페어링 요청입니다. 요청이 만료되었거나 이미 처리되었습니다."),
     PAIRING_NOT_FOUND(HttpStatus.NOT_FOUND, "연결된 보호자 관계를 찾을 수 없습니다."),
 
     // ── 알림 목록 ─────────────────────────────────────────

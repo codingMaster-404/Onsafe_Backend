@@ -5,7 +5,6 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
-import org.springframework.security.core.authority.SimpleGrantedAuthority
 import org.springframework.security.core.context.ReactiveSecurityContextHolder
 import org.springframework.stereotype.Component
 import org.springframework.web.server.ServerWebExchange
@@ -37,9 +36,10 @@ class JwtAuthenticationFilter(
                 if (blacklisted.isNotEmpty()) {
                     writeErrorResponse(exchange, ErrorCode.INVALID_TOKEN)
                 } else {
-                    val auth = UsernamePasswordAuthenticationToken(
-                        userId, null, listOf(SimpleGrantedAuthority("ROLE_USER"))
-                    )
+                    // 보호자/피보호자 관계는 인증 시점에 고정되는 role로 표현할 수 없는 M:N 구조라
+                    // (AccessGuard 참고) Spring Security의 role/authority 기반 인가를 쓰지 않는다.
+                    // authorities는 항상 비워두고, 리소스별 인가는 각 컨트롤러가 명시적으로 처리한다.
+                    val auth = UsernamePasswordAuthenticationToken(userId, null, emptyList())
                     chain.filter(exchange)
                         .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth))
                 }

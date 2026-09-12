@@ -91,7 +91,7 @@ jobs:
             --max-instances 10 \
             --timeout 300 \
             --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379,AWS_REGION=${{ vars.AWS_REGION }},SES_FROM_EMAIL=${{ vars.SES_FROM_EMAIL }}" \
-            --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest" \
+            --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest" \
             --quiet
 
           URL=$(gcloud run services describe ${{ env.KOTLIN_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')

@@ -21,17 +21,21 @@ class FallLogRepository(
 
     private val col get() = firestore.collection("fall_logs")
 
-    suspend fun findRecentByUserId(userId: String, level: String? = null): List<FallLog> {
-        val all = col.whereEqualTo("user_id", userId)
-            .orderBy("timestamp", Query.Direction.DESCENDING)
+    // since != null 이면 timestamp 하한 필터 — 재페어링 시 새 보호자에게 이전 이력 노출 방지용.
+    // 본인 호출(AccessGuard.Grant.Owner) 은 since=null 로, 보호자 호출은 link.createdAt 을 넘긴다.
+    suspend fun findRecentByUserId(userId: String, level: String? = null, since: LocalDateTime? = null): List<FallLog> {
+        var query = col.whereEqualTo("user_id", userId) as Query
+        if (since != null) query = query.whereGreaterThanOrEqualTo("timestamp", since.toTimestamp())
+        val all = query.orderBy("timestamp", Query.Direction.DESCENDING)
             .limit(100)
             .get().await().documents.map { it.toFallLog() }
         return if (level != null) all.filter { it.matchesLevel(level) } else all
     }
 
-    suspend fun countByUserId(userId: String): Map<String, Int> {
-        val all = col.whereEqualTo("user_id", userId)
-            .orderBy("timestamp", Query.Direction.DESCENDING)
+    suspend fun countByUserId(userId: String, since: LocalDateTime? = null): Map<String, Int> {
+        var query = col.whereEqualTo("user_id", userId) as Query
+        if (since != null) query = query.whereGreaterThanOrEqualTo("timestamp", since.toTimestamp())
+        val all = query.orderBy("timestamp", Query.Direction.DESCENDING)
             .limit(100)
             .get().await().documents.map { it.toFallLog() }
         return mapOf(
@@ -47,16 +51,18 @@ class FallLogRepository(
         else   -> true
     }
 
-    suspend fun findByLogIdAndUserId(logId: String, userId: String): FallLog? =
-        getDocIfOwned(logId, userId)?.toFallLog()
+    // 단건 조회 시에도 since 필터 적용 — 컨트롤러가 URL 로 직접 logId 를 넣어 지난 이력에 접근하려는
+    // 우회를 봉쇄. since 이전 이벤트는 존재해도 조회 결과가 null 로 나와 컨트롤러가 LOG_NOT_FOUND 반환.
+    suspend fun findByLogIdAndUserId(logId: String, userId: String, since: LocalDateTime? = null): FallLog? =
+        getDocIfOwned(logId, userId, since)?.toFallLog()
 
     suspend fun save(log: FallLog): FallLog {
         col.document(log.logId).set(log.toMap()).await()
         return log
     }
 
-    suspend fun confirmByLogIdAndUserId(logId: String, userId: String): FallLog? {
-        val doc = getDocIfOwned(logId, userId) ?: return null
+    suspend fun confirmByLogIdAndUserId(logId: String, userId: String, since: LocalDateTime? = null): FallLog? {
+        val doc = getDocIfOwned(logId, userId, since) ?: return null
         col.document(logId).update("is_confirmed", true).await()
         return doc.toFallLog().copy(isConfirmed = true)
     }
@@ -127,9 +133,14 @@ class FallLogRepository(
     suspend fun findLogIdsByUserId(userId: String): List<String> =
         col.whereEqualTo("user_id", userId).get().await().documents.map { it.id }
 
-    private suspend fun getDocIfOwned(logId: String, userId: String): DocumentSnapshot? {
+    private suspend fun getDocIfOwned(logId: String, userId: String, since: LocalDateTime? = null): DocumentSnapshot? {
         val doc = col.document(logId).get().await()
-        return if (doc.exists() && doc.getString("user_id") == userId) doc else null
+        if (!doc.exists() || doc.getString("user_id") != userId) return null
+        if (since != null) {
+            val ts = doc.getTimestamp("timestamp")?.toLocalDateTime() ?: return null
+            if (ts < since) return null
+        }
+        return doc
     }
 
     private fun DocumentSnapshot.toFallLog() = FallLog(
