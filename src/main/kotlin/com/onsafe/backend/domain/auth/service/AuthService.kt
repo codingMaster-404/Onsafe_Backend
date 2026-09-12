@@ -23,11 +23,12 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import java.time.Duration
+import java.util.UUID
 
 private const val EMAIL_CODE_TTL = 180L    // 3분
 private const val RESET_CODE_TTL = 180L    // 3분
 private const val RESET_VERIFIED_TTL = 600L // 10분 — verifyResetCode 성공 후 resetPassword 가능 시간
-private const val EMAIL_VERIFIED_TTL = 900L // 15분 — verifyEmailCode 성공 후 register 가능 시간 (가입 폼 입력 항목이 많아 RESET_VERIFIED_TTL보다 여유를 둠)
+private const val EMAIL_VERIFY_TICKET_TTL = 900L // 15분 — verifyEmailCode 성공 후 register 가능 시간 (가입 폼 입력 항목이 많아 RESET_VERIFIED_TTL보다 여유를 둠)
 
 @Service
 class AuthService(
@@ -89,19 +90,26 @@ class AuthService(
         emailService.sendEmailVerificationCode(request.mail, code)
     }
 
-    suspend fun verifyEmailCode(request: VerifyEmailCodeRequest) {
+    // 인증 성공 시 mail-단독 플래그 대신 UUID 티켓을 발급해 응답으로 돌려준다. register 요청은
+    // 이 티켓을 첨부해야 통과되므로, 같은 mail을 다른 사용자가 훔쳐 자기 계정에 붙이는
+    // 선점(squatting) 시나리오를 원천 차단한다. 티켓 값에 mail이 담겨 있어 소비 시 요청의
+    // mail 필드와 대조해 티켓·mail 불일치도 걸러낸다.
+    suspend fun verifyEmailCode(request: VerifyEmailCodeRequest): VerifyEmailCodeResponse {
         // 코드 브루트포스 방지 — 코드 공간이 10^6이라 창당 5회면 성공 확률이 무시할 수준.
         rateLimiter.requireAllowed("rl:verify-email:${request.mail}", limit = 5, windowSec = 3600)
         val key = "email_verify:${request.mail}"
         val storedCode = log.guardRedis("email 인증코드 조회") { redis.opsForValue().get(key).awaitFirstOrNull() }
             ?: throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
         if (storedCode != request.code) throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
-        log.guardRedis("email 인증코드 삭제 및 완료 플래그 저장") {
+
+        val ticket = UUID.randomUUID().toString()
+        log.guardRedis("email 인증코드 삭제 및 티켓 저장") {
             redis.delete(key).awaitSingle()
             redis.opsForValue()
-                .set("email_verified:${request.mail}", "1", Duration.ofSeconds(EMAIL_VERIFIED_TTL))
+                .set("verify_ticket:$ticket", request.mail, Duration.ofSeconds(EMAIL_VERIFY_TICKET_TTL))
                 .awaitSingle()
         }
+        return VerifyEmailCodeResponse(emailVerifyTicket = ticket)
     }
 
     suspend fun sendResetCode(request: SendResetCodeRequest) {
@@ -134,8 +142,8 @@ class AuthService(
     }
 
     suspend fun register(request: RegisterRequest, ipAddress: String) {
-        // 이메일 인증 게이트(email_verified 플래그)로 어느 정도 간접 방어되지만, 이미 인증된
-        // 플래그를 재사용한 반복 register() 호출까지는 막지 못해 IP 기준으로 한 번 더 제한한다.
+        // 이메일 인증 티켓만으로는 이미 인증된 티켓을 재사용한 반복 register() 호출까지는 막지
+        // 못해 IP 기준으로 한 번 더 제한한다.
         rateLimiter.requireAllowed("rl:register:ip:$ipAddress", limit = 10, windowSec = 3600)
         if (userRepository.existsByUserId(request.userId)) {
             throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
@@ -146,15 +154,21 @@ class AuthService(
         if (userRepository.existsByPhone(request.phone)) {
             throw BusinessException(ErrorCode.PHONE_ALREADY_EXISTS)
         }
-        val verifiedKey = "email_verified:${request.mail}"
-        log.guardRedis("email 인증완료 플래그 조회") { redis.opsForValue().get(verifiedKey).awaitFirstOrNull() }
-            ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
+        // 티켓을 GETDEL로 원자적으로 소비 — 동시 요청이 같은 티켓을 재사용하려 해도 한 요청만
+        // 성공한다. 티켓 값(=verify 시점의 mail)이 이 요청의 mail과 일치해야만 인증으로 인정 —
+        // 이렇게 하지 않으면 인증만 마친 다른 사용자의 이메일을 자기 계정에 붙일 수 있다.
+        val ticketMail = log.guardRedis("email 인증 티켓 소비") {
+            redis.opsForValue().getAndDelete("verify_ticket:${request.emailVerifyTicket}").awaitFirstOrNull()
+        } ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
+        if (ticketMail != request.mail) {
+            throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
+        }
 
         val now = java.time.LocalDateTime.now()
-        // existsByUserId() 사전 체크(136행)는 흔한 경우(이미 존재하는 아이디)를 빠르게 걸러내는
-        // 역할이고, 실제 동시 요청 레이스는 여기 createIfNotExists의 트랜잭션이 최종 방어한다.
-        // users 문서와 settings 문서를 한 트랜잭션으로 묶어, User는 생성됐는데 settings가
-        // 없는 부분 성공 상태가 구조적으로 생기지 않게 한다.
+        // 위 existsByUserId/Mail/Phone 사전 체크는 흔한 경우(이미 존재)를 빠르게 걸러내는 역할,
+        // 실제 동시 요청 레이스는 여기 createIfNotExists의 트랜잭션이 최종 방어한다.
+        // users + user_emails/{mail} + user_phones/{phone} + settings + consents를 한 트랜잭션으로
+        // 묶어 세 축의 유일성과 부분 성공 방지를 동시에 처리한다.
         val created = userRepository.createIfNotExists(
             User(
                 userId = request.userId,
@@ -176,15 +190,19 @@ class AuthService(
                     agreedAt = now
                 )
         )
-        if (!created) throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
-        // 계정(+settings)은 이미 생성 완료된 상태 — 이 플래그 삭제는 뒷정리일 뿐이라 실패해도
-        // register()를 실패로 응답하면 안 된다. 어차피 TTL로 자연 만료되고, 재가입 시도는
-        // existsByUserId()/createIfNotExists()가 별도로 막아준다.
-        runCatching {
-            log.guardRedis("email 인증완료 플래그 삭제") { redis.delete(verifiedKey).awaitSingle() }
-        }.onFailure { e ->
-            log.warn("email 인증완료 플래그 삭제 실패 (TTL로 자연 만료됨) — mail={}, cause={}", request.mail, e.message)
+        // 트랜잭션 실패는 세 축(userId/mail/phone) 중 하나가 사이 창에 저장됐다는 뜻. 사용자가
+        // 어떤 축을 바꿔야 할지 알 수 있도록 어느 축이 이미 존재하는지 재조회해서 세분화된
+        // 에러를 던진다. 이 시점의 사후 조회 자체는 새 레이스에 열려 있지만 안내 목적일 뿐,
+        // 실제 데이터 무결성은 이미 트랜잭션이 보장한 상태다.
+        if (!created) {
+            when {
+                userRepository.existsByUserId(request.userId) -> throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
+                userRepository.existsByMail(request.mail) -> throw BusinessException(ErrorCode.MAIL_ALREADY_EXISTS)
+                userRepository.existsByPhone(request.phone) -> throw BusinessException(ErrorCode.PHONE_ALREADY_EXISTS)
+                else -> throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
+            }
         }
+        // 티켓은 위에서 GETDEL로 이미 소비돼 별도 정리 불필요.
     }
 
     suspend fun login(request: LoginRequest, ipAddress: String, userAgent: String): LoginResponse {
