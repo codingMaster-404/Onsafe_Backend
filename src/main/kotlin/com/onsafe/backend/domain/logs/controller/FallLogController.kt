@@ -34,8 +34,8 @@ class FallLogController(
         @AuthenticationPrincipal principal: String,
         @RequestParam(required = false) level: String?
     ): ApiResponse<Map<String, List<FallLogResponse>>> {
-        accessGuard.requireOwnerOrGuardian(principal, userId)
-        return ApiResponse.ok(mapOf("logs" to fallLogService.getLogs(userId, level)))
+        val since = accessGuard.requireOwnerOrGuardian(principal, userId).sinceOrNull()
+        return ApiResponse.ok(mapOf("logs" to fallLogService.getLogs(userId, level, since)))
     }
 
     @Operation(summary = "낙상 로그 탭별 건수 조회", security = [SecurityRequirement(name = "BearerAuth")])
@@ -44,8 +44,8 @@ class FallLogController(
         @PathVariable userId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<Map<String, Int>> {
-        accessGuard.requireOwnerOrGuardian(principal, userId)
-        return ApiResponse.ok(fallLogService.getLogCounts(userId))
+        val since = accessGuard.requireOwnerOrGuardian(principal, userId).sinceOrNull()
+        return ApiResponse.ok(fallLogService.getLogCounts(userId, since))
     }
 
     @Operation(summary = "낙상 로그 상세 조회", security = [SecurityRequirement(name = "BearerAuth")])
@@ -55,8 +55,8 @@ class FallLogController(
         @PathVariable logId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<FallLogResponse> {
-        accessGuard.requireOwnerOrGuardian(principal, userId)
-        return ApiResponse.ok(fallLogService.getLog(userId, logId))
+        val since = accessGuard.requireOwnerOrGuardian(principal, userId).sinceOrNull()
+        return ApiResponse.ok(fallLogService.getLog(userId, logId, since))
     }
 
     @Operation(
@@ -70,8 +70,8 @@ class FallLogController(
         @PathVariable logId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<FallLogResponse> {
-        accessGuard.requireOwnerOrGuardian(principal, userId)
-        return ApiResponse.ok(fallLogService.confirmLog(userId, logId), "낙상 이벤트를 확인 처리했습니다.")
+        val since = accessGuard.requireOwnerOrGuardian(principal, userId).sinceOrNull()
+        return ApiResponse.ok(fallLogService.confirmLog(userId, logId, since), "낙상 이벤트를 확인 처리했습니다.")
     }
 
     @Operation(summary = "낙상 로그 삭제", security = [SecurityRequirement(name = "BearerAuth")])
@@ -97,10 +97,15 @@ class FallLogController(
         @PathVariable logId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<Map<String, String>> {
-        accessGuard.requireOwnerOrGuardian(principal, userId)
-        val signedUrl = fallLogService.getSignedUrl(userId, logId)
+        val since = accessGuard.requireOwnerOrGuardian(principal, userId).sinceOrNull()
+        val signedUrl = fallLogService.getSignedUrl(userId, logId, since)
         return ApiResponse.ok(mapOf("signed_url" to signedUrl))
     }
+
+    // Grant.Guardian 일 때 since 를 뽑고, Owner 는 null(전체 이력) — 컨트롤러 5개 조회
+    // 엔드포인트가 공통으로 쓰는 헬퍼. 재페어링 시 새 보호자에게 이전 이력이 노출되지 않게 한다.
+    private fun AccessGuard.Grant.sinceOrNull(): java.time.LocalDateTime? =
+        (this as? AccessGuard.Grant.Guardian)?.since
 
     @Operation(
         summary = "낙상 동영상 업로드용 signed URL 발급 (#14)",

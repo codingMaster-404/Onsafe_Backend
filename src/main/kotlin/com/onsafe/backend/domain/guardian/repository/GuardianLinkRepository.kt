@@ -33,6 +33,14 @@ class GuardianLinkRepository(private val firestore: Firestore) {
     suspend fun exists(guardianUserId: String, elderUserId: String): Boolean =
         col.document(docId(guardianUserId, elderUserId)).get().await().exists()
 
+
+    // AccessGuard 가 승인 시각(link.createdAt) 을 획득하기 위해 사용. 존재만 확인하는 exists 로는
+    // 재페어링 이력 필터의 since 값을 얻을 수 없어 별도 조회가 필요.
+    suspend fun find(guardianUserId: String, elderUserId: String): GuardianLink? {
+        val doc = col.document(docId(guardianUserId, elderUserId)).get().await()
+        return if (doc.exists()) doc.toLink() else null
+    }
+
     // 유저별 활성 링크 존재 여부. 1:1 정책 강제(pair·issuePairingCode)와 이후 heartbeat 워치독의
     // "감시 대상 카메라 목록" 조회 등 두 축에서 공통으로 쓸 수 있어 별도 헬퍼로 노출한다.
     suspend fun existsByGuardian(guardianUserId: String): Boolean =

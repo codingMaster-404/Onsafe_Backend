@@ -4,6 +4,7 @@ import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import org.springframework.stereotype.Component
+import java.time.LocalDateTime
 
 // 보호자/피보호자 관계(GuardianLink)는 유저 고정 role이 아니라 요청 대상 리소스(userId)마다
 // 달라지는 M:N 관계다 — Spring Security의 hasRole/hasAuthority/@PreAuthorize는 인증 시점에
@@ -14,11 +15,24 @@ import org.springframework.stereotype.Component
 @Component
 class AccessGuard(private val guardianLinkRepository: GuardianLinkRepository) {
 
-    // 조회성 API 전용 — 본인이거나 연결된 보호자면 통과. 삭제·업로드처럼 리소스를 직접
-    // 조작하는 API에는 쓰지 않는다(본인 전용으로 남겨야 함, FallLogController 예시 참고).
-    suspend fun requireOwnerOrGuardian(principal: String, userId: String) {
-        if (principal == userId) return
-        if (guardianLinkRepository.exists(principal, userId)) return
-        throw BusinessException(ErrorCode.FORBIDDEN)
+    // 접근 승인 결과. 본인은 전체 이력 접근 가능하지만, 보호자는 "연결된 시점 이후"의 이력만
+    // 볼 수 있어야 한다(21번째 회의 §3e — 재페어링 시 이전 이력이 새 보호자에게 노출되는 문제).
+    // 컨트롤러는 이 반환값의 since 로 쿼리 필터를 걸어 이 정책을 강제한다.
+    sealed class Grant {
+        // 본인 접근 — 이력 시각 제한 없음
+        object Owner : Grant()
+        // 보호자 접근 — since(연결 시각) 이후 이력만 접근 허용
+        data class Guardian(val since: LocalDateTime) : Grant()
+    }
+
+    // 조회성 API 전용 — 본인이거나 연결된 보호자면 통과, Grant 반환. 삭제·업로드처럼 리소스를
+    // 직접 조작하는 API 에는 쓰지 않는다(본인 전용으로 남겨야 함).
+    // 반환 Grant.since 를 컨트롤러가 하위 쿼리 필터로 전달해야 재페어링 이후에도 이전 이력이
+    // 새 보호자에게 노출되지 않는다.
+    suspend fun requireOwnerOrGuardian(principal: String, userId: String): Grant {
+        if (principal == userId) return Grant.Owner
+        val link = guardianLinkRepository.find(principal, userId)
+            ?: throw BusinessException(ErrorCode.FORBIDDEN)
+        return Grant.Guardian(since = link.createdAt)
     }
 }

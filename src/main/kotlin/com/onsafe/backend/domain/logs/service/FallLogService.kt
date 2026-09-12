@@ -8,6 +8,7 @@ import com.onsafe.backend.domain.logs.model.dto.FallLogResponse
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import org.springframework.stereotype.Service
+import java.time.LocalDateTime
 
 @Service
 class FallLogService(
@@ -15,20 +16,22 @@ class FallLogService(
     private val storageService: StorageService
 ) {
 
-    suspend fun getLogs(userId: String, level: String? = null): List<FallLogResponse> =
-        fallLogRepository.findRecentByUserId(userId, level).map { FallLogResponse.from(it) }
+    // since 는 AccessGuard.Grant.Guardian.since (연결 시각) — 보호자 호출 시 이 값을 넘겨
+    // 이 이전에 발생한 이력이 새 보호자에게 노출되지 않게 한다. 본인 호출은 null.
+    suspend fun getLogs(userId: String, level: String? = null, since: LocalDateTime? = null): List<FallLogResponse> =
+        fallLogRepository.findRecentByUserId(userId, level, since).map { FallLogResponse.from(it) }
 
-    suspend fun getLogCounts(userId: String): Map<String, Int> =
-        fallLogRepository.countByUserId(userId)
+    suspend fun getLogCounts(userId: String, since: LocalDateTime? = null): Map<String, Int> =
+        fallLogRepository.countByUserId(userId, since)
 
-    suspend fun getLog(userId: String, logId: String): FallLogResponse {
-        val log = fallLogRepository.findByLogIdAndUserId(logId, userId)
+    suspend fun getLog(userId: String, logId: String, since: LocalDateTime? = null): FallLogResponse {
+        val log = fallLogRepository.findByLogIdAndUserId(logId, userId, since)
             ?: throw BusinessException(ErrorCode.LOG_NOT_FOUND)
         return FallLogResponse.from(log)
     }
 
-    suspend fun confirmLog(userId: String, logId: String): FallLogResponse {
-        val log = fallLogRepository.confirmByLogIdAndUserId(logId, userId)
+    suspend fun confirmLog(userId: String, logId: String, since: LocalDateTime? = null): FallLogResponse {
+        val log = fallLogRepository.confirmByLogIdAndUserId(logId, userId, since)
             ?: throw BusinessException(ErrorCode.LOG_NOT_FOUND)
         return FallLogResponse.from(log)
     }
@@ -38,8 +41,8 @@ class FallLogService(
         if (deleted == 0L) throw BusinessException(ErrorCode.LOG_NOT_FOUND)
     }
 
-    suspend fun getSignedUrl(userId: String, logId: String): String {
-        val log = fallLogRepository.findByLogIdAndUserId(logId, userId)
+    suspend fun getSignedUrl(userId: String, logId: String, since: LocalDateTime? = null): String {
+        val log = fallLogRepository.findByLogIdAndUserId(logId, userId, since)
             ?: throw BusinessException(ErrorCode.LOG_NOT_FOUND)
         val url = log.videoUrl ?: throw BusinessException(ErrorCode.VIDEO_NOT_FOUND)
         return storageService.generateSignedUrl(url)
