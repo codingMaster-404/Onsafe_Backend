@@ -38,6 +38,13 @@ aws:
     region: ${AWS_REGION:ap-northeast-2}
     from: ${SES_FROM_EMAIL:}
 
+# Cloud Scheduler 가 /internal/jobs/** 트리거 시 X-Internal-Auth 헤더로 첨부하는 시크릿.
+# 실제 값은 Secret Manager 슬롯 INTERNAL_JOB_SECRET 에서 주입. 로컬은 빈 값 → 항상 FORBIDDEN
+# (fail-closed).
+internal:
+  job:
+    secret: ${INTERNAL_JOB_SECRET:}
+
 logging:
   level:
     com.onsafe: DEBUG
