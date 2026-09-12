@@ -14,5 +14,5 @@ suspend fun <T> Logger.guardRedis(context: String, block: suspend () -> T): T = 
     throw e
 } catch (e: Exception) {
     error("Redis 오류 ($context): ${e.message}", e)
-    throw BusinessException(ErrorCode.REDIS_UNAVAILABLE)
+    throw BusinessException(ErrorCode.REDIS_UNAVAILABLE, e)
 }
