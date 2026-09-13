@@ -5,6 +5,7 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.domain.camera.model.entity.RealtimeData
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
 import com.onsafe.backend.domain.camera.service.CameraService
+import com.onsafe.backend.domain.notification.service.NotificationService
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -16,13 +17,14 @@ import org.junit.jupiter.api.Test
 class CameraServiceTest {
 
     private val realtimeDataRepository: RealtimeDataRepository = mockk()
+    private val notificationService: NotificationService = mockk()
     private lateinit var cameraService: CameraService
 
     private val baseRealtimeData = RealtimeData(userId = "testUser", score = 30f, level = "정상")
 
     @BeforeEach
     fun setUp() {
-        cameraService = CameraService(realtimeDataRepository)
+        cameraService = CameraService(realtimeDataRepository, notificationService)
     }
 
     // ── 위험도 점수 조회 ──────────────────────────────────────────
