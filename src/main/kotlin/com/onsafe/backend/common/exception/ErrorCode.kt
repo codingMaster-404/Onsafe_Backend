@@ -15,6 +15,7 @@ enum class ErrorCode(
     // ── 인증/회원 ──────────────────────────────────────────
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "사용자를 찾을 수 없습니다."),
     MAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 사용 중인 이메일입니다."),
+    PHONE_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 사용 중인 전화번호입니다."),
     INVALID_PASSWORD(HttpStatus.UNAUTHORIZED, "비밀번호가 일치하지 않습니다."),
     INVALID_TOKEN(HttpStatus.UNAUTHORIZED, "유효하지 않은 토큰입니다."),
     EXPIRED_TOKEN(HttpStatus.UNAUTHORIZED, "만료된 토큰입니다."),
@@ -36,6 +37,7 @@ enum class ErrorCode(
 
     // ── 이메일 인증 ────────────────────────────────────────
     INVALID_EMAIL_CODE(HttpStatus.BAD_REQUEST, "유효하지 않은 인증코드입니다. 코드가 만료되었거나 올바르지 않습니다."),
+    EMAIL_NOT_VERIFIED(HttpStatus.BAD_REQUEST, "이메일 인증을 먼저 완료해주세요."),
     MAIL_SEND_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "이메일 발송에 실패했습니다."),
 
     // ── 알림 ──────────────────────────────────────────────

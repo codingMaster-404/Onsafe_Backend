@@ -19,8 +19,11 @@ class AuthController(private val authService: AuthService) {
     @Operation(summary = "회원가입")
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
-    suspend fun register(@Valid @RequestBody request: RegisterRequest): ApiResponse<Unit> {
-        authService.register(request)
+    suspend fun register(
+        @Valid @RequestBody request: RegisterRequest,
+        exchange: ServerWebExchange
+    ): ApiResponse<Unit> {
+        authService.register(request, exchange.clientIpAddress())
         return ApiResponse.ok(message = "회원가입이 완료되었습니다.")
     }
 

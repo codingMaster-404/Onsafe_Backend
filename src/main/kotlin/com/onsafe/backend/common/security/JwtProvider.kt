@@ -8,6 +8,7 @@ import io.jsonwebtoken.Jwts
 import io.jsonwebtoken.security.Keys
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
+import java.security.MessageDigest
 import java.time.Duration
 import java.util.Date
 import javax.crypto.SecretKey
@@ -47,12 +48,18 @@ class JwtProvider(
         ErrorCode.INVALID_TOKEN
     }
 
-    fun validate(token: String): Boolean = getValidationError(token) == null
-
     fun getRemainingExpiry(token: String): Duration = runCatching {
         val remaining = parseClaims(token).expiration.time - System.currentTimeMillis()
         if (remaining > 0) Duration.ofMillis(remaining) else Duration.ZERO
     }.getOrDefault(Duration.ZERO)
+
+    // Redis 키/슬로우로그/백업 등에 토큰 원문이 그대로 남지 않도록 해시로 치환한다.
+    // 저장(AuthService)과 조회(JwtAuthenticationFilter) 양쪽이 반드시 이 함수 하나만 써야
+    // 해시 방식이 어긋나 블랙리스트가 조용히 무력화되는 일이 없다.
+    fun blacklistKey(token: String): String {
+        val hash = MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+        return "bl:" + hash.joinToString("") { "%02x".format(it) }
+    }
 
     private fun buildToken(userId: String, email: String, expiry: Long): String {
         val now = Date()
