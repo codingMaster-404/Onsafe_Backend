@@ -87,9 +87,9 @@ class AuthController(private val authService: AuthService) {
 
     @Operation(summary = "회원가입 이메일 인증코드 확인")
     @PostMapping("/verify-email-code")
-    suspend fun verifyEmailCode(@Valid @RequestBody request: VerifyEmailCodeRequest): ApiResponse<Unit> {
-        authService.verifyEmailCode(request)
-        return ApiResponse.ok(message = "이메일 인증이 완료되었습니다.")
+    suspend fun verifyEmailCode(@Valid @RequestBody request: VerifyEmailCodeRequest): ApiResponse<VerifyEmailCodeResponse> {
+        val response = authService.verifyEmailCode(request)
+        return ApiResponse.ok(response, "이메일 인증이 완료되었습니다.")
     }
 
     @Operation(summary = "비밀번호 재설정 인증코드 발송")

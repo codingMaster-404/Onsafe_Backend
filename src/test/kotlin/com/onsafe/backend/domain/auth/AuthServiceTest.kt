@@ -101,7 +101,7 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "a@b.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "a@b.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
                 "127.0.0.1"
             )
         }.exceptionOrNull()
@@ -117,7 +117,7 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
                 "127.0.0.1"
             )
         }.exceptionOrNull()
@@ -134,7 +134,7 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
                 "127.0.0.1"
             )
         }.exceptionOrNull()
@@ -148,11 +148,11 @@ class AuthServiceTest {
         coEvery { userRepository.existsByUserId("testUser") } returns false
         coEvery { userRepository.existsByMail("test@example.com") } returns false
         coEvery { userRepository.existsByPhone("010-1234-5678") } returns false
-        every { valueOps.get("email_verified:test@example.com") } returns Mono.empty()
+        every { valueOps.getAndDelete("verify_ticket:test-ticket") } returns Mono.empty()
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
                 "127.0.0.1"
             )
         }.exceptionOrNull()

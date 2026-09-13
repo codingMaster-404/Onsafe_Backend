@@ -70,9 +70,10 @@ class UserService(
     }
 
     suspend fun deleteUser(userId: String) {
-        if (!userRepository.existsByUserId(userId)) {
-            throw BusinessException(ErrorCode.USER_NOT_FOUND)
-        }
+        // findByUserId를 앞에서 한 번만 수행 — 아래 cascade에서 user_emails/{mail},
+        // user_phones/{phone} 룩업 문서를 지우려면 mail/phone 값이 필요하다.
+        val user = userRepository.findByUserId(userId)
+            ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
         // 개인정보보호법 제21조: 회원탈퇴 시 지체 없이 파기. Firestore 문서만 지우면
         // GCS 라이프사이클(gcs-lifecycle.json 상 최대 180일)까지 원본 영상이 남으므로
         // logId를 먼저 수집해 blob을 삭제한 뒤 Firestore를 지운다.
@@ -111,7 +112,9 @@ class UserService(
                 "notifications(본인)" to suspend { notificationRepository.deleteByUserId(userId) },
                 "notifications(보호자 사본)" to suspend { notificationRepository.deleteByLogIds(logIds) },
                 "guardian_links" to suspend { guardianLinkRepository.deleteAllInvolving(userId) },
-                "consents" to suspend { consentRepository.deleteByUserId(userId) }
+                "consents" to suspend { consentRepository.deleteByUserId(userId) },
+                "user_emails" to suspend { userRepository.deleteEmailLookup(user.mail) },
+                "user_phones" to suspend { userRepository.deletePhoneLookup(user.phone) }
             )
             deletions.map { (name, delete) ->
                 async {

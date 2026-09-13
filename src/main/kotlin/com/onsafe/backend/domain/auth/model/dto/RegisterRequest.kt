@@ -45,5 +45,11 @@ data class RegisterRequest(
     @field:AssertTrue(message = "민감정보(건강·위치 데이터) 처리에 동의해주세요.")
     val sensitiveInfoAgreed: Boolean,
 
-    val marketingConsent: Boolean = false
+    val marketingConsent: Boolean = false,
+
+    // verifyEmailCode 응답으로 받은 1회용 티켓. 이 요청과 verify 시점의 mail 소유자가
+    // 동일한 사용자임을 서버가 확인하기 위한 값 — mail-단독 플래그만으로는 다른 사용자의
+    // 인증 완료 상태를 자기 register에 도용해 이메일 선점이 가능해진다.
+    @field:NotBlank(message = "이메일 인증 티켓이 필요합니다.")
+    val emailVerifyTicket: String
 )
