@@ -48,6 +48,8 @@ class JwtProvider(
         ErrorCode.INVALID_TOKEN
     }
 
+    fun validate(token: String): Boolean = getValidationError(token) == null
+
     fun getRemainingExpiry(token: String): Duration = runCatching {
         val remaining = parseClaims(token).expiration.time - System.currentTimeMillis()
         if (remaining > 0) Duration.ofMillis(remaining) else Duration.ZERO
