@@ -1,5 +1,6 @@
 package com.onsafe.backend.domain.user.model.dto
 
+import jakarta.validation.constraints.Email
 import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
 
@@ -17,6 +18,7 @@ data class UserUpdateRequest(
     )
     val password: String? = null,
 
+    @field:Email(message = "이메일 형식이 올바르지 않습니다.")
     val mail: String? = null,
 
     @field:Pattern(regexp = "^01[016789]-?\\d{3,4}-?\\d{4}$", message = "전화번호 형식이 올바르지 않습니다.")

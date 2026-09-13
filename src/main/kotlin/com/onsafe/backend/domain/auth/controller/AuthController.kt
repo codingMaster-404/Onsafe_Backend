@@ -19,8 +19,11 @@ class AuthController(private val authService: AuthService) {
     @Operation(summary = "회원가입")
     @PostMapping("/register")
     @ResponseStatus(HttpStatus.CREATED)
-    suspend fun register(@Valid @RequestBody request: RegisterRequest): ApiResponse<Unit> {
-        authService.register(request)
+    suspend fun register(
+        @Valid @RequestBody request: RegisterRequest,
+        exchange: ServerWebExchange
+    ): ApiResponse<Unit> {
+        authService.register(request, exchange.clientIpAddress())
         return ApiResponse.ok(message = "회원가입이 완료되었습니다.")
     }
 
@@ -84,9 +87,9 @@ class AuthController(private val authService: AuthService) {
 
     @Operation(summary = "회원가입 이메일 인증코드 확인")
     @PostMapping("/verify-email-code")
-    suspend fun verifyEmailCode(@Valid @RequestBody request: VerifyEmailCodeRequest): ApiResponse<Unit> {
-        authService.verifyEmailCode(request)
-        return ApiResponse.ok(message = "이메일 인증이 완료되었습니다.")
+    suspend fun verifyEmailCode(@Valid @RequestBody request: VerifyEmailCodeRequest): ApiResponse<VerifyEmailCodeResponse> {
+        val response = authService.verifyEmailCode(request)
+        return ApiResponse.ok(response, "이메일 인증이 완료되었습니다.")
     }
 
     @Operation(summary = "비밀번호 재설정 인증코드 발송")
@@ -108,5 +111,15 @@ class AuthController(private val authService: AuthService) {
     suspend fun refresh(@RequestHeader("Refresh-Token") refreshToken: String): ApiResponse<TokenResponse> {
         val tokens = authService.refresh(refreshToken)
         return ApiResponse.ok(tokens)
+    }
+
+    @Operation(summary = "액세스 토큰 유효성 검증 (자동 로그인용)")
+    @PostMapping("/validate")
+    suspend fun validate(
+        @RequestHeader(value = "Authorization", required = false) authorization: String?
+    ): ApiResponse<Unit> {
+        val accessToken = authorization?.removePrefix("Bearer ")?.trim()
+        authService.validateAccessToken(accessToken)
+        return ApiResponse.ok(message = "유효한 토큰입니다.")
     }
 }

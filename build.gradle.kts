@@ -22,6 +22,11 @@ dependencies {
     // Spring WebFlux (리액티브 웹)
     implementation("org.springframework.boot:spring-boot-starter-webflux")
 
+    // Actuator — Cloud Run 배포 워크플로가 /actuator/health 를 smoke-test 로 부르는데,
+    // 이 의존성이 없으면 엔드포인트 자체가 없어 첫 배포부터 헬스체크가 항상 실패한다.
+    // application.yml 에서 노출 범위를 health 로 제한해 env·metrics 등이 새어나가지 않게 한다.
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+
     // Kotlin 코루틴 (WebFlux와 함께 사용)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")

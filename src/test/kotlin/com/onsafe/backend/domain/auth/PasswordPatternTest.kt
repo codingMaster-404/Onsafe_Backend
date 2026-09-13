@@ -26,7 +26,11 @@ class PasswordPatternTest {
                 password = password,
                 name = "홍길동",
                 mail = "test@test.com",
-                phone = "010-1234-5678"
+                phone = "010-1234-5678",
+                termsAgreed = true,
+                privacyPolicyAgreed = true,
+                sensitiveInfoAgreed = true,
+                emailVerifyTicket = "test-ticket"
             )
         ).any { it.propertyPath.toString() == "password" }
 

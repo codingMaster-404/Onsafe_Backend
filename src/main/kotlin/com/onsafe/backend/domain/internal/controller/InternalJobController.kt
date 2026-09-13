@@ -3,6 +3,7 @@ package com.onsafe.backend.domain.internal.controller
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
+import com.onsafe.backend.domain.auth.service.LoginHistoryCleanupJob
 import com.onsafe.backend.domain.camera.service.HeartbeatWatchdogJob
 import io.swagger.v3.oas.annotations.Operation
 import org.springframework.beans.factory.annotation.Value
@@ -12,10 +13,10 @@ import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 import java.security.MessageDigest
 
-// Cloud Scheduler 전용 진입점. Cloud Run min-instances=0 이라 @Scheduled 가 트래픽 없는 시간대에
-// 발동되지 않으므로, 스케줄 유발은 외부(Cloud Scheduler)가 담당하고 서버는 그 트리거로만 잡을
-// 실행한다. Python AI 전용 InternalController 와 별도 파일로 분리해 AI 서버 발송 경로에는
-// 시크릿 요구를 도입하지 않는다(별도 스코프).
+// Cloud Scheduler 전용 진입점. Cloud Run min-instances=0 이라 @Scheduled 가 트래픽 없는 시간대
+// (새벽 3시 KST 등)에 발동되지 않으므로, 스케줄 유발은 외부(Cloud Scheduler)가 담당하고
+// 서버는 그 트리거로만 잡을 실행한다. Python AI 전용 InternalController 와 별도 파일로 분리해
+// AI 서버 발송 경로에는 시크릿 요구를 도입하지 않는다(별도 스코프).
 //
 // 인증: X-Internal-Auth 헤더에 담긴 시크릿을 constant-time 비교. 시크릿은 Secret Manager 슬롯
 // INTERNAL_JOB_SECRET 을 배포 시 환경변수로 주입한다. 값이 비어 있으면 항상 FORBIDDEN 이라
@@ -23,9 +24,20 @@ import java.security.MessageDigest
 @RestController
 @RequestMapping("/internal/jobs")
 class InternalJobController(
+    private val loginHistoryCleanupJob: LoginHistoryCleanupJob,
     private val heartbeatWatchdogJob: HeartbeatWatchdogJob,
     @Value("\${internal.job.secret:}") private val expectedSecret: String
 ) {
+
+    @Operation(summary = "로그인 이력 정리 (Cloud Scheduler 트리거)", security = [])
+    @PostMapping("/login-history-cleanup")
+    suspend fun runLoginHistoryCleanup(
+        @RequestHeader(value = "X-Internal-Auth", required = false) auth: String?
+    ): ApiResponse<Unit> {
+        requireInternalAuth(auth)
+        loginHistoryCleanupJob.run()
+        return ApiResponse.ok(message = "cleanup triggered")
+    }
 
     @Operation(summary = "카메라 heartbeat 워치독 실행 (Cloud Scheduler 트리거)", security = [])
     @PostMapping("/heartbeat-watchdog")
