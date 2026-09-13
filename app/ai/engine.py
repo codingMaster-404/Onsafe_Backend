@@ -68,6 +68,46 @@ for _j in _JOINTS_ORDER:
 FEATURE_COLUMNS += ['center_distance', 'center_speed']
 assert len(FEATURE_COLUMNS) == 47, f"Feature 개수 불일치: {len(FEATURE_COLUMNS)}"
 
+# ── 입력 커버리지 게이트 파라미터 ──────────────────────────────────────────────
+# 학습 파이프라인은 "몸이 제대로 안 잡힌" 저커버리지 입력을 아예 학습에서 제외했다:
+#   · 0fps(검출 실패) 클립          → CSV 미생성
+#   · video_clean_delete_with_csv   → CSV/클립 비율 < 0.5 인 비디오 통째 삭제
+# 그 결과 모델은 저커버리지 입력을 본 적이 없으므로, 추론 시에도 동일 기준으로
+# 저커버리지 윈도우를 걸러 학습 분포 밖 입력(예: 설치 중 손만 인식)의 오탐을 막는다.
+CONF_THRESHOLD             = 0.3   # visibility 임계 (Step2 결측 마스킹과 공유)
+PELVIS_COVERAGE_MIN        = 0.5   # 골반(23,24)이 보이는 프레임 비율 하한 (학습 threshold=0.5 대응)
+JOINT_COVERAGE_MIN         = 0.5   # 윈도우 내 핵심 관절 전반의 유효 비율(프레임×관절) 하한
+MIN_VALID_FRAMES_PER_JOINT = 2     # 다리 체인 관절별 최소 유효 프레임 (보간 가능 하한)
+
+# 정규화 앵커(골반) — 여기가 비면 Step4 골반 정규화(중앙정렬·스케일) 자체가 무의미해진다.
+_PELVIS_JOINTS = (23, 24)
+# 피처(_JOINT_TRIPLETS)에 실제로 쓰이는 관절만 커버리지 판정 대상으로 삼는다.
+# (눈·귀·입·손가락·뒤꿈치 등은 피처에 쓰이지 않으므로 게이트 대상에서 제외)
+_CORE_JOINTS = sorted({idx for _, a, b, c in _JOINT_TRIPLETS for idx in (a, b, c)})
+
+# 다리 체인(엉덩이-무릎-발목) 좌/우. 하체가 프레임에 들어와 있는지 판정하는 데 쓴다.
+#
+# [운영 정책] 카메라는 전신(full-body)이 잡히는 설치가 기준이다. 다만 실제 낙상에서는
+# self-occlusion(카메라 각도상 반대편 팔·다리가 몸에 가려짐)이 흔해, "모든 관절"을 요구하면
+# 진짜 낙상을 통째로 놓친다(실측: 놓친 낙상 전부가 한쪽 팔/다리 미검출로 게이트 차단).
+# → 그래서 "양쪽 중 최소 한쪽 다리 체인이 유효"를 하체 존재 판정 기준으로 삼는다.
+#   손만/얼굴만(골반=0)·상반신만(양쪽 다리 모두 없음)은 여전히 차단되고, 한쪽 다리만
+#   가린 정상 촬영은 통과한다. 가려진 쪽 소수 관절은 Step2에서 보간/0-fill 로 메운다.
+_LEG_CHAINS = ((23, 25, 27), (24, 26, 28))  # (hip, knee, ankle) 좌 / 우
+
+# ── 하강 동역학 확정 파라미터 (ON) ──────────────────────────────────────────────
+# 모델이 낙상이라 해도 "중심의 급강하"가 없으면 강등하는 후처리 레이어. 하강 속도는 몸통
+# 길이(어깨중점-골반중점)로 정규화한다(카메라 화각 무관).
+#   · [보정] 학습 curated 클립(14k)에선 ADL이 애초에 75를 안 넘어 레이어 효과가 없었으나,
+#     실배포에 가까운 raw 영상(앱과 동일한 lite+IMAGE 추출)으로 재검증하니 빠른 정상 동작의
+#     오탐이 다수 존재했고, 이 레이어가 그걸 걸러낸다.
+#   · V 스윕(raw 영상 60개, 0.5~1.0/0.1): FALL 감지는 26/30으로 평평, ADL 오탐만 10→5로
+#     단조 감소 → V=1.0 에서 Youden·F1 최대. 오탐 15→5(67%↓), 낙상 손실은 baseline 대비 2건.
+#   · 남는 오탐은 peak_vy 가 큰 "빠른 정상 동작"(모델/ROI 영역). 표본 60개 기준이라 실로그로 재보정 권장.
+FALL_CONFIRM_BY_DESCENT = True   # ON — raw 영상 오탐 억제 (False 로 끄면 모델 판정 그대로)
+DESCENT_SPAN_SEC        = 0.2    # 순간 하강속도 측정 구간(초)
+DESCENT_VELOCITY_MIN    = 1.0    # 몸통길이/초 단위 하강속도 하한 (raw 영상 스윕 최적점)
+
 # ── 싱글턴 모델 ────────────────────────────────────────────────────────────────
 _model  = None
 _scaler = None
@@ -112,9 +152,56 @@ def _smooth_score(device_id: str, timestamp: float, instant_score: float) -> flo
     return sum(recent) / len(recent) if recent else instant_score
 
 
+# ── 입력 커버리지 게이트 ───────────────────────────────────────────────────────
+
+def _coverage_gate(df: pd.DataFrame) -> bool:
+    """윈도우가 추론 가능한 최소 커버리지를 만족하는지 검사한다.
+    학습 파이프라인(0fps 클립 제외 + video_clean_delete_with_csv threshold=0.5)을
+    추론 시점에 재현해, 학습 분포 밖의 저커버리지 입력을 걸러낸다.
+    True = 추론 진행, False = 저커버리지로 스킵."""
+    n = len(df)
+    if n == 0:
+        return False
+
+    def _valid_frames(joint: int):
+        col = f'kp{joint}_visibility'
+        if col not in df.columns:
+            return None
+        return int((df[col] >= CONF_THRESHOLD).sum())
+
+    # 1) 정규화 앵커인 골반(23,24) — 보이는 프레임 비율이 하한 이상이어야 함.
+    #    골반이 부실하면 Step4 정규화가 무너져(scale=0→1, center=0) 값 전체가 왜곡된다.
+    #    손만/얼굴만 인식되는 상황은 골반이 안 잡혀 여기서 걸러진다.
+    for j in _PELVIS_JOINTS:
+        col = f'kp{j}_visibility'
+        if col not in df.columns or (df[col] >= CONF_THRESHOLD).mean() < PELVIS_COVERAGE_MIN:
+            return False
+
+    # 2) 하체가 프레임에 들어와 있어야 함 — 양쪽 중 "최소 한쪽" 다리 체인
+    #    (엉덩이-무릎-발목)이 각 관절 최소 유효 프레임을 넘겨야 통과.
+    #    상반신만/다리 미검출(양쪽 다리 모두 없음)은 차단, 한쪽 self-occlusion 은 통과.
+    def _chain_ok(chain):
+        cnts = [_valid_frames(j) for j in chain]
+        return all(c is not None and c >= MIN_VALID_FRAMES_PER_JOINT for c in cnts)
+    if not any(_chain_ok(chain) for chain in _LEG_CHAINS):
+        return False
+
+    # 3) 핵심 관절 전반의 유효 비율(프레임×관절 평균)이 하한 이상이어야 함.
+    valid_total = 0
+    for j in _CORE_JOINTS:
+        c = _valid_frames(j)
+        if c is None:
+            return False
+        valid_total += c
+    if valid_total / (len(_CORE_JOINTS) * n) < JOINT_COVERAGE_MIN:
+        return False
+
+    return True
+
+
 # ── 전처리 Step2 ───────────────────────────────────────────────────────────────
 
-def _step2_resolve_nan(df: pd.DataFrame, conf_threshold: float = 0.3) -> pd.DataFrame:
+def _step2_resolve_nan(df: pd.DataFrame, conf_threshold: float = CONF_THRESHOLD) -> pd.DataFrame:
     """visibility 기반 NaN 처리 → 3σ 이상치 제거 → 양방향 보간"""
     df    = df.copy()
     kp_x  = sorted([c for c in df.columns if c.endswith('_x')])
@@ -176,10 +263,15 @@ def _step2_resolve_nan(df: pd.DataFrame, conf_threshold: float = 0.3) -> pd.Data
             s = s.interpolate(method='linear', limit_direction='both')
         df[c] = s.ffill().bfill()
 
-    # 한 관절이 윈도우 내내 안 보이면(열 전체 NaN) 위 보간으로도 못 채워 잔여 NaN 이 남고,
-    # 이후 savgol·각도계산·scaler 가 "array must not contain infs or NaNs" 로 죽는다.
-    # → 윈도우를 통째로 버려 낙상 감지가 눈머는 것보다, 중립값(0)으로 채워 추론을 지속한다.
-    #   (해당 관절은 정지 상태가 되어 각속도·각가속도가 0 → 오탐을 유발하지 않는다)
+    # 잔여 NaN/inf 처리.
+    # 학습 파이프라인은 0을 "결측"으로 보고 보간으로 제거하며(Interpolation의 replace(0, NaN)),
+    # "완전 가려진 관절 = 0 = 정지"라는 취급은 하지 않는다. 과거 이 자리의 0-fill 은
+    # 그 관절을 raw 공간에서 (0,0,0)으로 고정했는데, 이후 Step4 골반 정규화가 프레임마다
+    # 다른 affine 변환이라 정규화 공간에서는 오히려 움직이는 점이 되어 합성 각속도·각가속도(=오탐)를 만들었다.
+    # → 이제 피처에 실제로 쓰이는 관절(_CORE_JOINTS)은 상위 _coverage_gate 가 윈도우별로
+    #   최소 유효 프레임을 보장하므로 위 보간 단계에서 실제 좌표 기반으로 모두 채워진다.
+    #   여기 남는 잔여 NaN 은 피처에 쓰이지 않는 관절(눈·귀·입·손가락·뒤꿈치 등)뿐이며,
+    #   savgol/scaler 크래시만 막으면 되므로 0 으로 채운다(피처 결과에 영향 없음).
     df[num_cols] = df[num_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     return df
 
@@ -316,11 +408,47 @@ def _no_inference(status: str, level: str | None = "정상") -> dict:
     return {"score": 0.0, "fall": False, "level": level, "features": {}, "status": status}
 
 
+def _center_descent_peak_velocity(buf: deque) -> float:
+    """윈도우 내 중심(골반 중점)의 '하강' 속도 피크를 몸통 길이로 정규화해 반환한다.
+    낙상=급강하(큰 값), 완만한 눕기/일어남·빠른 상체동작=작은 값.
+    - 이미지 y는 아래로 갈수록 증가하므로 (cy[j]-cy[j-lag])>0 이 하강. 상승(일어남)은 음수라 무시.
+    - 카메라 거리/화각 차이를 줄이기 위해 몸통 길이(어깨중점-골반중점)의 중앙값으로 나눈다.
+    반환 단위: 몸통길이/초."""
+    rows = list(buf)
+    n = len(rows)
+    if n < 3:
+        return 0.0
+    cy = np.array([(r['kp23_y'] + r['kp24_y']) / 2.0 for r in rows])
+    t  = np.array([float(r['timestamp']) for r in rows])
+    sh_y = np.array([(r['kp11_y'] + r['kp12_y']) / 2.0 for r in rows])
+    sh_x = np.array([(r['kp11_x'] + r['kp12_x']) / 2.0 for r in rows])
+    hp_y = cy
+    hp_x = np.array([(r['kp23_x'] + r['kp24_x']) / 2.0 for r in rows])
+    torso = np.hypot(sh_y - hp_y, sh_x - hp_x)
+    scale = float(np.median(torso))
+    if scale < 1e-6:
+        return 0.0
+
+    diffs = np.diff(t)
+    dt_med = float(np.median(diffs)) if len(diffs) else 0.0
+    lag = max(1, round(DESCENT_SPAN_SEC / dt_med)) if dt_med > 0 else 1
+
+    peak = 0.0
+    for j in range(lag, n):
+        dt = t[j] - t[j - lag]
+        if dt > 0:
+            v = (cy[j] - cy[j - lag]) / dt / scale   # 몸통길이/초, 양수=하강
+            if v > peak:
+                peak = v
+    return peak
+
+
 def infer_landmarks(landmarks: list, device_id: str, timestamp: float) -> dict:
     """
     landmark JSON → 30프레임 윈도우 → XGBoost → 2초 구간 평활화
     → {"score": float, "fall": bool, "level": str|None, "features": dict, "status": str}
     status: "ok"(추론 성공) / "warming"(윈도우 미달) / "skip"(STRIDE 미달·landmark 부족)
+            / "low_coverage"(유효 관절/골반 커버리지 미달 — 학습 분포 밖 입력이라 추론 안 함)
             / "error"(전처리·추론 예외 — level=None, 상위에서 직전값 유지)
 
     반환 score는 30프레임(~1초) 윈도우 평균(instant_score)을 다시
@@ -351,6 +479,12 @@ def infer_landmarks(landmarks: list, device_id: str, timestamp: float) -> dict:
     # ── 전처리 Step2~6 + XGBoost 추론 ─────────────────────────────────────
     try:
         df_win = pd.DataFrame(buf)
+
+        # 입력 커버리지 게이트 — 학습이 제외했던 저커버리지 윈도우를 추론에서도 거른다.
+        # (골반 앵커 소실·설치 중 손만 인식 등 학습 분포 밖 입력의 오탐 차단)
+        if not _coverage_gate(df_win):
+            return _no_inference("low_coverage")
+
         df_win = _step2_resolve_nan(df_win)
         df_win = _step3_smoothing_savgol(df_win)
         df_win = _step4_pose_normalize(df_win)
@@ -361,6 +495,15 @@ def infer_landmarks(landmarks: list, device_id: str, timestamp: float) -> dict:
         instant_score = float(proba[:, 1].mean() * 100)     # 30프레임(~1초) 평균
         score = _smooth_score(device_id, timestamp, instant_score)  # 2초 구간 추가 평활화
         fall  = bool(score > CRITICAL_THRESHOLD)
+
+        # 하강 동역학 확정 — 위험 판정이라도 중심의 급강하가 없으면 오탐으로 보고 강등한다.
+        # (빠른 상체동작·완만한 눕기/일어남을 억제. 급강하 시그니처가 있어야 낙상으로 확정)
+        if FALL_CONFIRM_BY_DESCENT and fall:
+            peak_vy = _center_descent_peak_velocity(buf)
+            if peak_vy < DESCENT_VELOCITY_MIN:
+                fall  = False
+                score = min(score, CRITICAL_THRESHOLD)   # 위험 알림 억제 → 주의로 강등
+
         level = classify_level(score)
         feats = df_win[FEATURE_COLUMNS].iloc[-1].to_dict()
         return {"score": score, "fall": fall, "level": level, "features": feats, "status": "ok"}
