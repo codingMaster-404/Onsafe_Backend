@@ -129,6 +129,63 @@ class NotificationService(
         }
     }
 
+    // 카메라 앱 오프라인 감지 시 연결된 보호자 전원에게 발송. HeartbeatWatchdogJob 이 호출한다.
+    // notifyElderAndGuardians 와 달리 피보호자 본인에게는 안 보낸다 — 앱이 오프라인이라 어차피
+    // 못 받을 뿐 아니라, 복구 시 자기 화면에 상태가 바로 반영되므로 별도 알림이 불필요.
+    // 개별 발송 실패 격리 원칙은 동일 — 한 명 실패가 나머지 보호자 발송을 막지 않는다.
+    suspend fun notifyGuardiansCameraOffline(elderUserId: String) {
+        val elderName = runCatching { userRepository.findByUserId(elderUserId) }.getOrNull()?.name ?: elderUserId
+        val guardianIds = runCatching { guardianLinkRepository.findGuardiansOf(elderUserId) }
+            .onFailure { e -> log.warn("보호자 목록 조회 실패 (elderUserId: $elderUserId): ${e.message}") }
+            .getOrDefault(emptyList())
+        if (guardianIds.isEmpty()) {
+            log.info("오프라인 알림 대상 보호자 없음 — elderUserId=$elderUserId")
+            return
+        }
+        coroutineScope {
+            guardianIds.map { guardianId ->
+                async {
+                    runCatching {
+                        sendNotification(
+                            NotificationRequest(
+                                userId = guardianId,
+                                title = "카메라 오프라인",
+                                body = "[$elderName] 카메라 앱과 연결이 끊겼습니다. 상태를 확인해주세요.",
+                                data = mapOf("event" to "camera_offline", "elder_user_id" to elderUserId)
+                            )
+                        )
+                    }.onFailure { e -> log.warn("오프라인 알림 실패 (guardianId: $guardianId): ${e.message}") }
+                }
+            }.awaitAll()
+        }
+    }
+
+    // 오프라인 알림을 받은 뒤 heartbeat 이 다시 재개돼 복구된 경우. 재알림 게이트 초기화는
+    // 호출부(HeartbeatWatchdogJob 또는 upsertHeartbeat 후속)에서 별도로 담당.
+    suspend fun notifyGuardiansCameraRecovered(elderUserId: String) {
+        val elderName = runCatching { userRepository.findByUserId(elderUserId) }.getOrNull()?.name ?: elderUserId
+        val guardianIds = runCatching { guardianLinkRepository.findGuardiansOf(elderUserId) }
+            .onFailure { e -> log.warn("보호자 목록 조회 실패 (elderUserId: $elderUserId): ${e.message}") }
+            .getOrDefault(emptyList())
+        if (guardianIds.isEmpty()) return
+        coroutineScope {
+            guardianIds.map { guardianId ->
+                async {
+                    runCatching {
+                        sendNotification(
+                            NotificationRequest(
+                                userId = guardianId,
+                                title = "카메라 다시 온라인",
+                                body = "[$elderName] 카메라 앱 연결이 복구되었습니다.",
+                                data = mapOf("event" to "camera_recovered", "elder_user_id" to elderUserId)
+                            )
+                        )
+                    }.onFailure { e -> log.warn("복구 알림 실패 (guardianId: $guardianId): ${e.message}") }
+                }
+            }.awaitAll()
+        }
+    }
+
     suspend fun getNotifications(userId: String): List<NotificationLogResponse> =
         notificationRepository.findRecentByUserId(userId).map { NotificationLogResponse.from(it) }
 

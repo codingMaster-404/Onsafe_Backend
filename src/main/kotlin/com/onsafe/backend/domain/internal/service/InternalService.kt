@@ -3,6 +3,7 @@ package com.onsafe.backend.domain.internal.service
 import com.onsafe.backend.domain.camera.model.entity.RealtimeData
 import com.onsafe.backend.domain.camera.model.entity.RiskLevel
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
+import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.internal.model.dto.SaveFallLogRequest
 import com.onsafe.backend.domain.internal.model.dto.UpdateRealtimeRequest
 import com.onsafe.backend.domain.logs.model.entity.FallLog
@@ -15,11 +16,23 @@ import org.springframework.stereotype.Service
 class InternalService(
     private val realtimeDataRepository: RealtimeDataRepository,
     private val fallLogRepository: FallLogRepository,
-    private val notificationService: NotificationService
+    private val notificationService: NotificationService,
+    private val guardianLinkRepository: GuardianLinkRepository,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
+    // 카메라 모드는 페어링된 상태에서만 의미가 있다 — 보호자 없이 홀로 저장·감지해도 알림받을
+    // 대상이 없으니 스토리지·처리 비용만 소비. 이 guard-rail 은 프론트가 카메라 모드 진입을
+    // 페어링 여부로 통제하는 1차 방어에 이어, 앱 우회·버그 상황을 대비한 2차 방어다.
+    // 회의록 §1a·1b(감시받지 않는 카메라)에 대한 대응: 폴백 발송이 아니라 저장 자체를 스킵.
+    private suspend fun hasGuardian(userId: String): Boolean =
+        guardianLinkRepository.existsByElder(userId)
+
     suspend fun updateRealtime(req: UpdateRealtimeRequest) {
+        if (!hasGuardian(req.userId)) {
+            log.debug("guardian 없음 — realtime 저장 스킵 (userId={})", req.userId)
+            return
+        }
         val existing = realtimeDataRepository.findByUserId(req.userId)
         val data = existing?.copy(score = req.score, level = req.level)
             ?: RealtimeData(userId = req.userId, score = req.score, level = req.level)
@@ -27,6 +40,10 @@ class InternalService(
     }
 
     suspend fun saveFallLog(req: SaveFallLogRequest) {
+        if (!hasGuardian(req.userId)) {
+            log.info("guardian 없음 — fall log 저장/알림 스킵 (userId={}, logId={})", req.userId, req.logId)
+            return
+        }
         fallLogRepository.save(
             FallLog(
                 logId = req.logId,

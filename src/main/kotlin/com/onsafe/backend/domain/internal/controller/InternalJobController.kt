@@ -4,6 +4,7 @@ import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.domain.auth.service.LoginHistoryCleanupJob
+import com.onsafe.backend.domain.camera.service.HeartbeatWatchdogJob
 import io.swagger.v3.oas.annotations.Operation
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.web.bind.annotation.PostMapping
@@ -24,6 +25,7 @@ import java.security.MessageDigest
 @RequestMapping("/internal/jobs")
 class InternalJobController(
     private val loginHistoryCleanupJob: LoginHistoryCleanupJob,
+    private val heartbeatWatchdogJob: HeartbeatWatchdogJob,
     @Value("\${internal.job.secret:}") private val expectedSecret: String
 ) {
 
@@ -35,6 +37,16 @@ class InternalJobController(
         requireInternalAuth(auth)
         loginHistoryCleanupJob.run()
         return ApiResponse.ok(message = "cleanup triggered")
+    }
+
+    @Operation(summary = "카메라 heartbeat 워치독 실행 (Cloud Scheduler 트리거)", security = [])
+    @PostMapping("/heartbeat-watchdog")
+    suspend fun runHeartbeatWatchdog(
+        @RequestHeader(value = "X-Internal-Auth", required = false) auth: String?
+    ): ApiResponse<Unit> {
+        requireInternalAuth(auth)
+        heartbeatWatchdogJob.run()
+        return ApiResponse.ok(message = "watchdog triggered")
     }
 
     private fun requireInternalAuth(header: String?) {
