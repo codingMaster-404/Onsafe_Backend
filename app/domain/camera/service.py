@@ -1,8 +1,7 @@
 """
 카메라 서비스
 - process_frame: landmark JSON 수신 → AI 추론 → Kotlin internal API로 realtime/fall-log 위임 (WebSocket)
-- score: Redis에서 현재 위험 점수 조회
-- status / url: Firestore devices 컬렉션 조회
+  (점수·기기 상태 조회 REST는 Kotlin /api/camera/*가 담당 — Python 쪽은 삭제, 완료 문서 D8)
 """
 import logging
 import uuid
@@ -13,18 +12,11 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from app.ai.buffer import save_score, get_score, check_caution_cooldown, check_danger_cooldown, apply_score_floor
 from app.ai.engine import infer_landmarks_async, classify_level, WARNING_THRESHOLD, CRITICAL_THRESHOLD
 from app.core.config import settings
-from app.core.exceptions import not_found
 from app.core.firebase import get_firestore
 from app.core.storage import upload_video
-from app.domain.camera.schemas import (
-    StreamResponse, ScoreResponse, StatusResponse,
-    CameraUrlResponse,
-)
+from app.domain.camera.schemas import StreamResponse
 
 logger = logging.getLogger(__name__)
-
-_DEVICES = "devices"
-
 
 _REALTIME = "realtime_data"
 _REALTIME_LIMIT = 2000
@@ -149,34 +141,5 @@ async def _save_fall_log(user_id: str, device_id: str, score: float, fall: bool,
     except Exception as e:
         logger.error("/internal/fall-log 호출 실패 log_id=%s user_id=%s: %s", log_id, user_id, e)
     return log_id
-
-
-async def get_score_for_user(user_id: str) -> ScoreResponse:
-    data = await get_score(user_id)
-    score = data["score"] if data else 0.0
-    level = data["level"] if data else "정상"
-    return ScoreResponse(user_id=user_id, score=score, level=level)
-
-
-async def get_device_status(device_id: str) -> StatusResponse:
-    db = get_firestore()
-    doc = await db.collection(_DEVICES).document(device_id).get()
-    if not doc.exists:
-        raise not_found("기기를 찾을 수 없습니다")
-    d = doc.to_dict()
-    return StatusResponse(
-        device_id=device_id,
-        status=d.get("status", "offline"),
-        last_seen=str(d.get("last_seen", "")),
-    )
-
-
-async def get_camera_url(device_id: str) -> CameraUrlResponse:
-    db = get_firestore()
-    doc = await db.collection(_DEVICES).document(device_id).get()
-    if not doc.exists:
-        raise not_found("기기를 찾을 수 없습니다")
-    d = doc.to_dict()
-    return CameraUrlResponse(device_id=device_id, camera_url=d.get("camera_url"))
 
 

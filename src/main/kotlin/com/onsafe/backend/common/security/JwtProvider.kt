@@ -45,10 +45,14 @@ class JwtProvider(
         Keys.hmacShaKeyFor(bytes)
     }
 
-    fun generateAccessToken(userId: String): String {
+    // access 토큰도 로그인 기준 절대 만료(auth_time + refresh 유효기간)를 넘지 않게 자른다.
+    // 자르지 않으면 30일 직전에 재발급된 access가 최대 1시간 더 유효하다. auth_time은 만료 계산에만
+    // 쓰고 클레임으로 넣지 않는다 — access로는 재발급하지 않으므로 이어받을 필요가 없다.
+    fun generateAccessToken(userId: String, authTime: Instant): String {
         val now = Date()
+        val absoluteExpiry = authTime.epochSecond * 1000 + refreshTokenExpiry
         return baseBuilder(userId, TokenType.ACCESS, now)
-            .expiration(Date(now.time + accessTokenExpiry))
+            .expiration(Date(minOf(now.time + accessTokenExpiry, absoluteExpiry)))
             .compact()
     }
 
@@ -68,6 +72,10 @@ class JwtProvider(
 
     fun getAuthTime(token: String): Instant =
         Instant.ofEpochSecond((parseClaims(token)[AUTH_TIME_CLAIM] as Number).toLong())
+
+    // 세션 무효화 판정(TokenRevocationStore)에 쓴다. JWT iat는 초 단위다.
+    fun getIssuedAt(token: String): Instant =
+        parseClaims(token).issuedAt.toInstant()
 
     /**
      * 토큰 유효성 검사 — 만료와 서명/형식/타입 오류를 구분해 ErrorCode로 반환.
@@ -115,6 +123,7 @@ class JwtProvider(
     private fun hasExpectedShape(claims: Claims, expectedType: TokenType): Boolean {
         if (claims[TYPE_CLAIM] != expectedType.claimValue) return false
         if (claims.subject.isNullOrBlank()) return false
+        if (claims.issuedAt == null) return false // 무효화 판정 기준값 — 없으면 판정할 수 없다
         return expectedType != TokenType.REFRESH || claims[AUTH_TIME_CLAIM] is Number
     }
 

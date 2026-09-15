@@ -18,7 +18,8 @@ import reactor.core.publisher.Mono
 class JwtAuthenticationFilter(
     private val jwtProvider: JwtProvider,
     private val redis: ReactiveStringRedisTemplate,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val tokenRevocationStore: TokenRevocationStore
 ) : WebFilter {
 
     override fun filter(exchange: ServerWebExchange, chain: WebFilterChain): Mono<Void> {
@@ -33,11 +34,16 @@ class JwtAuthenticationFilter(
         if (validationError != null) return writeErrorResponse(exchange, validationError)
 
         val userId = jwtProvider.getUserId(token)
+        val issuedAt = jwtProvider.getIssuedAt(token)
 
-        return redis.opsForValue().get(jwtProvider.blacklistKey(token))
-            .defaultIfEmpty("")
-            .flatMap { blacklisted ->
-                if (blacklisted.isNotEmpty()) {
+        // 토큰 단위 블랙리스트(로그아웃·재발급)와 사용자 단위 무효화 시각(탈퇴·비밀번호 변경·재설정)을
+        // MGET 한 번으로 조회해 요청당 Redis 왕복을 늘리지 않는다. 없는 키는 null로 온다.
+        val keys = listOf(jwtProvider.blacklistKey(token), tokenRevocationStore.key(userId))
+        return redis.opsForValue().multiGet(keys)
+            .flatMap { values ->
+                val blacklisted = values[0] != null
+                val revoked = tokenRevocationStore.isRevoked(issuedAt, values[1])
+                if (blacklisted || revoked) {
                     writeErrorResponse(exchange, ErrorCode.INVALID_TOKEN)
                 } else {
                     // 보호자/피보호자 관계는 인증 시점에 고정되는 role로 표현할 수 없는 M:N 구조라

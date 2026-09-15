@@ -2,7 +2,7 @@
 Redis 기반 AI 추론 지원 버퍼
 
 Redis 키 역할:
-  score:{user_id}        TTL 30s    최신 위험 점수 캐시 (GET /score 엔드포인트용)
+  score:{user_id}        TTL 30s    최신 위험 점수 캐시 (추론 실패 시 직전 점수 폴백용)
   caution_cd:{user_id}   TTL 300s   WARNING 중복 방지 쿨다운
   danger_cd:{user_id}    TTL 21600s CRITICAL(위험)·fall 이벤트 중복 방지 쿨다운 (6시간)
   score_floor:{user_id}  TTL 900s   CRITICAL 진입 시 점수 하락 방지용 최고값 유지 (15분, sticky)
@@ -10,17 +10,7 @@ Redis 키 역할:
 프레임 카운터 / 추론 시작 판단은 engine.py의 _frame_buffers deque가 담당한다 (Method A).
 """
 import json
-from redis.asyncio import Redis
-from app.core.config import settings
-
-_redis: Redis | None = None
-
-
-def get_redis() -> Redis:
-    global _redis
-    if _redis is None:
-        _redis = Redis.from_url(settings.redis_url, decode_responses=True)
-    return _redis
+from app.core.redis import get_redis
 
 
 async def save_score(user_id: str, score: float, level: str) -> None:

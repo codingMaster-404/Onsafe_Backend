@@ -4,6 +4,7 @@ import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.ratelimit.RateLimiter
 import com.onsafe.backend.common.security.JwtProvider
+import com.onsafe.backend.common.security.TokenRevocationStore
 import com.onsafe.backend.common.security.TokenType
 import com.onsafe.backend.common.security.VerificationCodeGenerator
 import com.onsafe.backend.domain.auth.model.dto.*
@@ -43,7 +44,8 @@ class AuthService(
     private val settingsRepository: SettingsRepository,
     private val consentRepository: ConsentRepository,
     private val rateLimiter: RateLimiter,
-    private val verificationCodeGenerator: VerificationCodeGenerator
+    private val verificationCodeGenerator: VerificationCodeGenerator,
+    private val tokenRevocationStore: TokenRevocationStore
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -76,6 +78,10 @@ class AuthService(
             redis.opsForValue().get(jwtProvider.blacklistKey(accessToken)).awaitFirstOrNull()
         }
         if (blacklisted != null) throw BusinessException(ErrorCode.INVALID_TOKEN)
+        // 탈퇴·비밀번호 변경·재설정으로 끊긴 세션이면 자동 로그인도 막는다.
+        if (tokenRevocationStore.isRevoked(jwtProvider.getUserId(accessToken), jwtProvider.getIssuedAt(accessToken))) {
+            throw BusinessException(ErrorCode.INVALID_TOKEN)
+        }
     }
 
     suspend fun checkId(request: CheckIdRequest) {
@@ -278,21 +284,28 @@ class AuthService(
 
     suspend fun refresh(refreshToken: String): TokenResponse {
         jwtProvider.getValidationError(refreshToken, TokenType.REFRESH)?.let { throw BusinessException(it) }
-        val isBlacklisted = log.guardRedis("refresh 토큰 블랙리스트 조회") {
-            redis.opsForValue().get(jwtProvider.blacklistKey(refreshToken)).awaitFirstOrNull()
+        val userId = jwtProvider.getUserId(refreshToken)
+
+        // 사용자 단위로 끊긴 세션(탈퇴·비밀번호 변경·재설정)이면 재발급하지 않는다.
+        if (tokenRevocationStore.isRevoked(userId, jwtProvider.getIssuedAt(refreshToken))) {
+            throw BusinessException(ErrorCode.INVALID_TOKEN)
         }
-        if (isBlacklisted != null) throw BusinessException(ErrorCode.INVALID_TOKEN)
+        // 무효화 키는 TTL(30일) 뒤 사라지므로, 탈퇴한 계정은 존재 여부로도 한 번 더 막는다.
+        userRepository.findByUserId(userId) ?: throw BusinessException(ErrorCode.INVALID_TOKEN)
 
-        // 로그인 시각(auth_time)을 이어받아 새 refresh 토큰도 로그인 기준 30일에 만료되게 한다.
-        val tokens = issueTokens(jwtProvider.getUserId(refreshToken), jwtProvider.getAuthTime(refreshToken))
-
+        // 조회 → 발급 → 블랙리스트 등록이 분리돼 있으면, 같은 refresh 토큰의 동시 요청이 둘 다 성공해
+        // 세션이 갈라진다. 발급 직전에 블랙리스트 키를 SET NX로 선점해 선점한 요청 하나만 발급한다.
+        // 키가 이미 있으면 로그아웃·이전 재발급·동시 요청 중 하나다. 앞의 검사에서 실패하면 선점하지
+        // 않으므로 Firestore 장애 같은 일시 오류로 토큰이 소모되지 않는다.
         val remaining = jwtProvider.getRemainingExpiry(refreshToken)
-        if (remaining > java.time.Duration.ZERO) {
-            log.guardRedis("refresh 토큰 블랙리스트 저장") {
-                redis.opsForValue().set(jwtProvider.blacklistKey(refreshToken), "1", remaining).awaitSingle()
-            }
+        if (remaining <= Duration.ZERO) throw BusinessException(ErrorCode.EXPIRED_TOKEN) // 검증 직후 만료된 경계
+        val claimed = log.guardRedis("refresh 토큰 선점") {
+            redis.opsForValue().setIfAbsent(jwtProvider.blacklistKey(refreshToken), "1", remaining).awaitSingle()
         }
-        return tokens
+        if (!claimed) throw BusinessException(ErrorCode.INVALID_TOKEN)
+
+        // 로그인 시각(auth_time)을 이어받아 새 토큰도 로그인 기준 30일에 만료되게 한다.
+        return issueTokens(userId, jwtProvider.getAuthTime(refreshToken))
     }
 
     suspend fun findId(request: FindIdRequest): FindIdResponse {
@@ -309,6 +322,9 @@ class AuthService(
 
         val user = userRepository.findByUserId(request.userId)
             ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
+        // 비밀번호를 잊었거나 탈취가 의심돼 재설정하는 경우라 기존 세션을 모두 끊는다.
+        // 저장보다 먼저 한다 — 저장 후 무효화가 실패하면 비밀번호만 바뀌고 옛 세션이 남는다.
+        tokenRevocationStore.revokeAll(user.userId)
         userRepository.save(user.copy(password = passwordEncoder.encode(request.newPassword)))
         log.guardRedis("reset 완료 플래그 삭제") { redis.delete(verifiedKey).awaitSingle() }
     }
@@ -320,7 +336,7 @@ class AuthService(
     }
 
     private fun issueTokens(userId: String, authTime: Instant) = TokenResponse(
-        accessToken = jwtProvider.generateAccessToken(userId),
+        accessToken = jwtProvider.generateAccessToken(userId, authTime),
         refreshToken = jwtProvider.generateRefreshToken(userId, authTime)
     )
 

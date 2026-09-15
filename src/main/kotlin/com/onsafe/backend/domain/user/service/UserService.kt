@@ -2,6 +2,7 @@ package com.onsafe.backend.domain.user.service
 
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
+import com.onsafe.backend.common.security.TokenRevocationStore
 import com.onsafe.backend.common.storage.StorageService
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
@@ -31,7 +32,8 @@ class UserService(
     private val storageService: StorageService,
     private val notificationRepository: NotificationRepository,
     private val guardianLinkRepository: GuardianLinkRepository,
-    private val consentRepository: ConsentRepository
+    private val consentRepository: ConsentRepository,
+    private val tokenRevocationStore: TokenRevocationStore
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -49,6 +51,10 @@ class UserService(
             if (request.currentPassword == null || !passwordEncoder.matches(request.currentPassword, user.password)) {
                 throw BusinessException(ErrorCode.INVALID_PASSWORD)
             }
+            // 비밀번호를 바꾸면 이 기기를 포함한 모든 세션을 끊는다(완료 문서 D6 — 새 토큰은 발급하지 않고
+            // 앱이 재로그인 화면으로 보낸다). 저장보다 먼저 한다 — 저장 후 무효화가 실패하면 비밀번호만
+            // 바뀌고 탈취자의 옛 세션이 남는다. 반대로 무효화 후 저장이 실패하면 재로그인 1회로 끝난다.
+            tokenRevocationStore.revokeAll(userId)
         }
         val updated = user.copy(
             name = request.name ?: user.name,
@@ -74,6 +80,10 @@ class UserService(
         // user_phones/{phone} 룩업 문서를 지우려면 mail/phone 값이 필요하다.
         val user = userRepository.findByUserId(userId)
             ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
+        // 삭제를 시작하기 전에 모든 세션을 끊는다. 캐스케이드 도중 다른 기기가 계속 요청해 데이터를 다시
+        // 만들거나, 같은 userId로 재가입한 사람이 옛 토큰으로 새 계정에 접근하는 것을 막는다.
+        // 무효화가 실패하면(Redis 장애) 아무것도 지우지 않은 채 503으로 끝나 재시도할 수 있다.
+        tokenRevocationStore.revokeAll(userId)
         // 개인정보보호법 제21조: 회원탈퇴 시 지체 없이 파기. Firestore 문서만 지우면
         // GCS 라이프사이클(gcs-lifecycle.json 상 최대 180일)까지 원본 영상이 남으므로
         // logId를 먼저 수집해 blob을 삭제한 뒤 Firestore를 지운다.
