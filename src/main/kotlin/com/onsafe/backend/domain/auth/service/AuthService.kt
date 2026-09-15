@@ -4,6 +4,7 @@ import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.ratelimit.RateLimiter
 import com.onsafe.backend.common.security.JwtProvider
+import com.onsafe.backend.common.security.TokenType
 import com.onsafe.backend.common.security.VerificationCodeGenerator
 import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
@@ -23,6 +24,7 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
 import java.time.Duration
+import java.time.Instant
 import java.util.UUID
 
 private const val EMAIL_CODE_TTL = 180L    // 3분
@@ -69,7 +71,7 @@ class AuthService(
     // 주기(1시간)마다 사실상 리셋된다.
     suspend fun validateAccessToken(accessToken: String?) {
         if (accessToken.isNullOrBlank()) throw BusinessException(ErrorCode.INVALID_TOKEN)
-        jwtProvider.getValidationError(accessToken)?.let { throw BusinessException(it) }
+        jwtProvider.getValidationError(accessToken, TokenType.ACCESS)?.let { throw BusinessException(it) }
         val blacklisted = log.guardRedis("access token 블랙리스트 조회") {
             redis.opsForValue().get(jwtProvider.blacklistKey(accessToken)).awaitFirstOrNull()
         }
@@ -236,7 +238,7 @@ class AuthService(
         }
 
         recordLoginHistory(user.userId, ipAddress, userAgent, true, null)
-        val tokens = issueTokens(user.userId, user.mail)
+        val tokens = issueTokens(user.userId, authTime = Instant.now())
         return LoginResponse(
             userId = user.userId,
             deviceId = request.deviceId,
@@ -275,13 +277,14 @@ class AuthService(
     }
 
     suspend fun refresh(refreshToken: String): TokenResponse {
-        jwtProvider.getValidationError(refreshToken)?.let { throw BusinessException(it) }
+        jwtProvider.getValidationError(refreshToken, TokenType.REFRESH)?.let { throw BusinessException(it) }
         val isBlacklisted = log.guardRedis("refresh 토큰 블랙리스트 조회") {
             redis.opsForValue().get(jwtProvider.blacklistKey(refreshToken)).awaitFirstOrNull()
         }
         if (isBlacklisted != null) throw BusinessException(ErrorCode.INVALID_TOKEN)
 
-        val tokens = issueTokens(jwtProvider.getUserId(refreshToken), jwtProvider.getEmail(refreshToken))
+        // 로그인 시각(auth_time)을 이어받아 새 refresh 토큰도 로그인 기준 30일에 만료되게 한다.
+        val tokens = issueTokens(jwtProvider.getUserId(refreshToken), jwtProvider.getAuthTime(refreshToken))
 
         val remaining = jwtProvider.getRemainingExpiry(refreshToken)
         if (remaining > java.time.Duration.ZERO) {
@@ -316,9 +319,9 @@ class AuthService(
         userRepository.save(user.copy(fcmToken = fcmToken))
     }
 
-    private fun issueTokens(userId: String, mail: String) = TokenResponse(
-        accessToken = jwtProvider.generateAccessToken(userId, mail),
-        refreshToken = jwtProvider.generateRefreshToken(userId, mail)
+    private fun issueTokens(userId: String, authTime: Instant) = TokenResponse(
+        accessToken = jwtProvider.generateAccessToken(userId),
+        refreshToken = jwtProvider.generateRefreshToken(userId, authTime)
     )
 
     private fun maskUserId(userId: String): String {

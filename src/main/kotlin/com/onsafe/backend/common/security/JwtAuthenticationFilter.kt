@@ -28,7 +28,8 @@ class JwtAuthenticationFilter(
 
         val token = extractToken(exchange) ?: return chain.filter(exchange)
 
-        val validationError = jwtProvider.getValidationError(token)
+        // refresh 토큰(30일)으로 보호 API에 접근하지 못하도록 access 타입만 받는다.
+        val validationError = jwtProvider.getValidationError(token, TokenType.ACCESS)
         if (validationError != null) return writeErrorResponse(exchange, validationError)
 
         val userId = jwtProvider.getUserId(token)

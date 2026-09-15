@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from jose import JWTError
 from app.core.deps import get_current_user_id
-from app.core.security import decode_token
+from app.core.security import decode_access_token
 from app.domain.camera import service
 from app.domain.camera.schemas import (
     ScoreResponse, StatusResponse,
@@ -15,8 +15,7 @@ ws_router = APIRouter(tags=["Camera WebSocket"])
 @ws_router.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket, token: str = Query(...)):
     try:
-        payload = decode_token(token)
-        _ = payload["sub"]
+        decode_access_token(token)
     except (JWTError, KeyError):
         await websocket.close(code=1008)
         return
