@@ -5,6 +5,8 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.ratelimit.RateLimiter
 import com.onsafe.backend.common.security.TokenRevocationStore
 import com.onsafe.backend.common.storage.StorageService
+import com.onsafe.backend.domain.auth.model.entity.LoginHistory
+import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
 import com.onsafe.backend.domain.consent.repository.ConsentRepository
@@ -57,6 +59,21 @@ class UserService(
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
+
+    /**
+     * 보안 이벤트 기록(C6). IP·User-Agent는 채우지 않는다 — 이 경로들에는 `ServerWebExchange`가
+     * 닿지 않고, 조사에서 결정적인 값은 로그인 시도의 IP다(완료 문서 D36).
+     * 기록 실패가 요청을 막지 않도록 격리하되, 실패 사실은 error 로그로 남긴다.
+     */
+    private suspend fun recordSecurityEvent(userId: String, eventType: SecurityEventType) {
+        runCatching {
+            loginHistoryRepository.save(
+                LoginHistory(historyId = "", userId = userId, eventType = eventType)
+            )
+        }.onFailure { e ->
+            log.error("보안 이벤트 저장 실패 — userId={}, event={}, cause={}", userId, eventType, e.message, e)
+        }
+    }
 
     suspend fun getUser(userId: String): UserResponse {
         val user = userRepository.findByUserId(userId)
@@ -125,6 +142,8 @@ class UserService(
         // 티켓은 저장이 끝난 뒤에 지운다 — 앞에서 소비하면 전화번호 중복(409)이나 Firestore 일시 오류로
         // 실패했을 때 티켓만 타 버려, 값 하나 고쳐 다시 저장하려 해도 비밀번호부터 다시 확인해야 한다(D15와 같은 이유).
         if (reauthVerified) deleteReauthTicket(request.reauthTicket)
+        // 비밀번호 변경은 계정 탈취의 핵심 단계라 반드시 흔적을 남긴다(C6).
+        if (changingPassword) recordSecurityEvent(userId, SecurityEventType.PASSWORD_CHANGE)
         return UserResponse.from(updated)
     }
 
@@ -198,6 +217,9 @@ class UserService(
 
         val logIds = fallLogRepository.findLogIdsByUserId(userId)
         val task = DeletionTask(userId = userId, mail = user.mail, phone = user.phone, logIds = logIds)
+
+        // 계정 문서가 사라지기 **전에** 남긴다 — 이력은 별도 컬렉션이라 탈퇴 후에도 조사에 쓸 수 있다(C6).
+        recordSecurityEvent(userId, SecurityEventType.ACCOUNT_DELETED)
 
         // ③ 임계 구간 — 이 트랜잭션이 끝나면 사용자 관점에서 탈퇴는 완료다(계정 소멸).
         userRepository.createDeletionTaskAndDeleteUser(task)

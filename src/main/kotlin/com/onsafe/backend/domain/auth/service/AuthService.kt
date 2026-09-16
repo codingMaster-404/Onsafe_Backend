@@ -10,6 +10,7 @@ import com.onsafe.backend.common.security.TokenType
 import com.onsafe.backend.common.security.VerificationCodeGenerator
 import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
+import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.consent.model.entity.CURRENT_CONSENT_VERSION
 import com.onsafe.backend.domain.consent.model.entity.ConsentType
@@ -93,6 +94,7 @@ class AuthService(
         }
         runCatching { notificationService.unregisterFcmToken(userId, fcmToken, deviceId) }
             .onFailure { e -> log.warn("로그아웃 FCM 해제 실패 (userId: $userId): ${e.message}") }
+        recordSecurityEvent(userId, SecurityEventType.LOGOUT)
     }
 
     private fun userIdOrNull(token: String, type: TokenType): String? =
@@ -286,14 +288,28 @@ class AuthService(
     suspend fun login(request: LoginRequest, ipAddress: String, userAgent: String): LoginResponse {
         // 이중 rate-limit: IP는 자동화 도구 봇넷 대응, userId는 특정 계정 표적 브루트포스 대응.
         // 실제 사용자는 두 창을 동시에 넘길 일이 거의 없으므로 정상 트래픽에 영향 없음.
-        rateLimiter.requireAllowed("rl:login:ip:$ipAddress", limit = 10, windowSec = 60)
-        rateLimiter.requireAllowed("rl:login:uid:${request.userId}", limit = 5, windowSec = 60)
+        try {
+            rateLimiter.requireAllowed("rl:login:ip:$ipAddress", limit = 10, windowSec = 60)
+            rateLimiter.requireAllowed("rl:login:uid:${request.userId}", limit = 5, windowSec = 60)
+        } catch (e: BusinessException) {
+            // 차단된 시도는 자동화 공격의 첫 신호라 성공·실패보다 먼저 드러난다 — 기록하고 그대로 던진다(C6).
+            if (e.errorCode == ErrorCode.TOO_MANY_REQUESTS) {
+                recordSecurityEvent(
+                    request.userId, SecurityEventType.LOGIN_BLOCKED, ipAddress, userAgent,
+                    success = false, failReason = ErrorCode.TOO_MANY_REQUESTS.name
+                )
+            }
+            throw e
+        }
         val user = userRepository.findByUserId(request.userId)
         if (user == null) {
             // 없는 아이디는 404 USER_NOT_FOUND로 그대로 알려준다 — 사용자가 "아이디가 없다"와
             // "비밀번호가 틀렸다"를 구분해서 볼 수 있어야 한다는 UX 판단(완료 문서 D21).
             // 계정 존재 여부는 어차피 check-id(409)로 확인할 수 있어 로그인만 가려도 실익이 적다.
-            recordLoginHistory(request.userId, ipAddress, userAgent, false, ErrorCode.USER_NOT_FOUND.name)
+            recordSecurityEvent(
+                request.userId, SecurityEventType.LOGIN_FAIL, ipAddress, userAgent,
+                success = false, failReason = ErrorCode.USER_NOT_FOUND.name
+            )
             throw BusinessException(ErrorCode.USER_NOT_FOUND)
         }
 
@@ -301,11 +317,14 @@ class AuthService(
             // 실패 사유(INVALID_PASSWORD)는 이력에만 남기고 응답은 LOGIN_FAILED(401)로 뭉뚱그린다.
             // INVALID_PASSWORD는 B7에서 400이 됐는데, 로그인 실패까지 400이면 앱이 토큰 흐름과
             // 무관한 실패를 다르게 다뤄야 한다. 아이디 존재 여부 은폐(B3 나머지)는 5단계.
-            recordLoginHistory(user.userId, ipAddress, userAgent, false, ErrorCode.INVALID_PASSWORD.name)
+            recordSecurityEvent(
+                user.userId, SecurityEventType.LOGIN_FAIL, ipAddress, userAgent,
+                success = false, failReason = ErrorCode.INVALID_PASSWORD.name
+            )
             throw BusinessException(ErrorCode.LOGIN_FAILED)
         }
 
-        recordLoginHistory(user.userId, ipAddress, userAgent, true, null)
+        recordSecurityEvent(user.userId, SecurityEventType.LOGIN_SUCCESS, ipAddress, userAgent)
         val tokens = issueTokens(user.userId, authTime = Instant.now())
         return LoginResponse(
             userId = user.userId,
@@ -316,32 +335,38 @@ class AuthService(
         )
     }
 
-    private suspend fun recordLoginHistory(
+    /**
+     * 보안 이벤트 기록(C6). 로그인 외 이벤트(차단·로그아웃·재설정)도 같은 컬렉션에 남는다.
+     *
+     * 이력 저장 실패는 요청 자체를 막지 않되(사용자 경험 우선), 침입 시도 감지·사후 조사를 위해
+     * 실패 사실은 반드시 error 로그로 남긴다.
+     */
+    private suspend fun recordSecurityEvent(
         userId: String,
-        ipAddress: String,
-        userAgent: String,
-        success: Boolean,
-        failReason: String?
+        eventType: SecurityEventType,
+        ipAddress: String? = null,
+        userAgent: String? = null,
+        success: Boolean = true,
+        failReason: String? = null,
     ) {
-        // 이력 저장 실패는 로그인 자체를 막지 않되(사용자 경험 우선),
-        // 침입 시도 감지·사후 조사를 위해 실패 사실은 반드시 error 로그로 남긴다.
         runCatching {
             loginHistoryRepository.save(
                 LoginHistory(
                     historyId = "",
                     userId = userId,
+                    eventType = eventType,
                     ipAddress = ipAddress,
                     // 길이 제한 없이 저장하면 클라이언트가 긴 User-Agent를 보내 Firestore 문서를 부풀릴 수 있다(D4).
                     // 모든 이력 저장이 이 함수를 거치므로 여기서만 자른다.
-                    userAgent = userAgent.take(MAX_USER_AGENT_LENGTH),
+                    userAgent = userAgent?.take(MAX_USER_AGENT_LENGTH),
                     success = success,
                     failReason = failReason
                 )
             )
         }.onFailure { e ->
             log.error(
-                "로그인 이력 저장 실패 — userId={}, success={}, failReason={}, cause={}",
-                userId, success, failReason, e.message, e
+                "보안 이벤트 저장 실패 — userId={}, event={}, cause={}",
+                userId, eventType, e.message, e
             )
         }
     }
@@ -417,6 +442,7 @@ class AuthService(
         // 저장보다 먼저 한다 — 저장 후 무효화가 실패하면 비밀번호만 바뀌고 옛 세션이 남는다.
         tokenRevocationStore.revokeAll(user.userId)
         userRepository.save(user.copy(password = passwordEncoder.encode(request.newPassword)))
+        recordSecurityEvent(user.userId, SecurityEventType.PASSWORD_RESET)
     }
 
     private fun issueTokens(userId: String, authTime: Instant) = TokenResponse(
