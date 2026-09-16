@@ -3,8 +3,8 @@ package com.onsafe.backend.domain.user.controller
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
-import com.onsafe.backend.domain.auth.model.dto.FcmTokenUpdateRequest
-import com.onsafe.backend.domain.auth.service.AuthService
+import com.onsafe.backend.domain.auth.model.dto.FcmTokenRequest
+import com.onsafe.backend.domain.notification.service.NotificationService
 import com.onsafe.backend.domain.user.model.dto.UserResponse
 import com.onsafe.backend.domain.user.model.dto.UserUpdateRequest
 import com.onsafe.backend.domain.user.model.dto.VerifyPasswordRequest
@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.*
 @RequestMapping("/api/users")
 class UserController(
     private val userService: UserService,
-    private val authService: AuthService
+    private val notificationService: NotificationService
 ) {
 
     @Operation(summary = "사용자 정보 조회", security = [SecurityRequirement(name = "BearerAuth")])
@@ -57,16 +57,30 @@ class UserController(
         return ApiResponse.ok(message = "비밀번호가 확인되었습니다.")
     }
 
-    @Operation(summary = "FCM 토큰 등록/갱신", security = [SecurityRequirement(name = "BearerAuth")])
-    @PutMapping("/{userId}/fcm-token")
-    suspend fun updateFcmToken(
+    @Operation(summary = "FCM 토큰 등록", security = [SecurityRequirement(name = "BearerAuth")])
+    @PostMapping("/{userId}/fcm-token")
+    suspend fun registerFcmToken(
         @PathVariable userId: String,
         @AuthenticationPrincipal principal: String,
-        @Valid @RequestBody request: FcmTokenUpdateRequest
+        @Valid @RequestBody request: FcmTokenRequest
     ): ApiResponse<Unit> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
-        authService.updateFcmToken(userId, request.fcmToken)
+        notificationService.registerFcmToken(userId, request.fcmToken, request.deviceId)
         return ApiResponse.ok(message = "FCM 토큰 등록 완료")
+    }
+
+    // 로그아웃 요청에 토큰을 실어 보내면(B2) 이 API를 따로 부를 필요가 없다. 기기 교체·앱 재설치처럼
+    // 로그아웃 없이 정리해야 하는 경우를 위해 남겨 둔다. 요청 토큰과 저장된 토큰이 같을 때만 지운다.
+    @Operation(summary = "FCM 토큰 해제", security = [SecurityRequirement(name = "BearerAuth")])
+    @DeleteMapping("/{userId}/fcm-token")
+    suspend fun unregisterFcmToken(
+        @PathVariable userId: String,
+        @AuthenticationPrincipal principal: String,
+        @Valid @RequestBody request: FcmTokenRequest
+    ): ApiResponse<Unit> {
+        if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
+        notificationService.unregisterFcmToken(userId, request.fcmToken, request.deviceId)
+        return ApiResponse.ok(message = "FCM 토큰 해제 완료")
     }
 
     @Operation(summary = "회원 탈퇴", security = [SecurityRequirement(name = "BearerAuth")])

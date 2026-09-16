@@ -55,7 +55,14 @@ class InternalService(
                 videoUrl = req.videoUrl
             )
         )
-        val notifData = mapOf("log_id" to req.logId, "user_id" to req.userId, "score" to req.score.toString())
+        // event 코드를 함께 실어야 앱이 포그라운드에서 이 알림이 무엇인지 구분할 수 있다(B8).
+        // 페어링 계열(pairing_*)이 아니면 앱은 "안전 알림" 채널로 표시한다.
+        val notifData = mapOf(
+            "event" to "fall_detected",
+            "log_id" to req.logId,
+            "user_id" to req.userId,
+            "score" to req.score.toString()
+        )
         if (req.fall || req.score > RiskLevel.DANGER_THRESHOLD) {
             notifySafe(
                 userId = req.userId,

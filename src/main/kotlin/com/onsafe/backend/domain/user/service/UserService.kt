@@ -9,6 +9,7 @@ import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
 import com.onsafe.backend.domain.consent.repository.ConsentRepository
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
+import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.dto.UserResponse
@@ -33,7 +34,8 @@ class UserService(
     private val notificationRepository: NotificationRepository,
     private val guardianLinkRepository: GuardianLinkRepository,
     private val consentRepository: ConsentRepository,
-    private val tokenRevocationStore: TokenRevocationStore
+    private val tokenRevocationStore: TokenRevocationStore,
+    private val fcmTokenRepository: FcmTokenRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -123,6 +125,8 @@ class UserService(
                 "notifications(보호자 사본)" to suspend { notificationRepository.deleteByLogIds(logIds) },
                 "guardian_links" to suspend { guardianLinkRepository.deleteAllInvolving(userId) },
                 "consents" to suspend { consentRepository.deleteByUserId(userId) },
+                // 사용자 문서 하위 서브컬렉션이라 계정 문서를 지워도 남는다 — 명시적으로 정리(B8).
+                "fcm_tokens" to suspend { fcmTokenRepository.deleteAll(userId) },
                 "user_emails" to suspend { userRepository.deleteEmailLookup(user.mail) },
                 "user_phones" to suspend { userRepository.deletePhoneLookup(user.phone) }
             )

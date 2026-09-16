@@ -14,6 +14,7 @@ import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.consent.model.entity.CURRENT_CONSENT_VERSION
 import com.onsafe.backend.domain.consent.model.entity.ConsentType
 import com.onsafe.backend.domain.consent.repository.ConsentRepository
+import com.onsafe.backend.domain.notification.service.NotificationService
 import com.onsafe.backend.domain.settings.model.entity.UserSettings
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.entity.User
@@ -48,7 +49,8 @@ class AuthService(
     private val consentRepository: ConsentRepository,
     private val rateLimiter: RateLimiter,
     private val verificationCodeGenerator: VerificationCodeGenerator,
-    private val tokenRevocationStore: TokenRevocationStore
+    private val tokenRevocationStore: TokenRevocationStore,
+    private val notificationService: NotificationService
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -67,10 +69,34 @@ class AuthService(
 
     // access token만 블랙리스트하면 refresh token으로 재발급이 계속 가능해 로그아웃의
     // 보안 효과가 제한적이므로, 두 토큰 모두를 각자 남은 만료 시간만큼 블랙리스트한다.
-    suspend fun logout(accessToken: String?, refreshToken: String?) {
+    /**
+     * 로그아웃 — 두 토큰을 블랙리스트하고, 함께 받은 FCM 토큰이 있으면 그 기기 것도 해제한다(B2).
+     *
+     * 해제를 별도 API로 두면 앱이 로그아웃 뒤에 호출하게 돼 그 시점엔 access 토큰이 이미
+     * 블랙리스트라 항상 401이고 서버에는 토큰이 남는다. 카메라 모드처럼 해제 호출이 아예 없는
+     * 경로도 이 방식이면 함께 정리된다. 본문은 선택이라 안 보내도 로그아웃 자체는 그대로 동작한다.
+     */
+    suspend fun logout(accessToken: String?, refreshToken: String?, fcm: LogoutRequest? = null) {
         if (!accessToken.isNullOrBlank()) blacklistToken(accessToken)
         if (!refreshToken.isNullOrBlank()) blacklistToken(refreshToken)
+
+        val fcmToken = fcm?.fcmToken?.takeIf { it.isNotBlank() } ?: return
+        val deviceId = fcm.deviceId?.takeIf { it.isNotBlank() } ?: return
+        // 로그아웃은 공개 경로라 인증 principal이 없다. 토큰에서 userId를 얻되, access가 이미
+        // 만료됐을 수 있어 refresh로도 한 번 더 시도한다. 둘 다 못 읽으면 조용히 건너뛴다 —
+        // 알림 토큰 정리 실패가 로그아웃을 막아서는 안 된다.
+        val userId = accessToken?.let { userIdOrNull(it, TokenType.ACCESS) }
+            ?: refreshToken?.let { userIdOrNull(it, TokenType.REFRESH) }
+        if (userId == null) {
+            log.warn("로그아웃 FCM 해제 건너뜀 — 토큰에서 userId를 읽지 못했습니다")
+            return
+        }
+        runCatching { notificationService.unregisterFcmToken(userId, fcmToken, deviceId) }
+            .onFailure { e -> log.warn("로그아웃 FCM 해제 실패 (userId: $userId): ${e.message}") }
     }
+
+    private fun userIdOrNull(token: String, type: TokenType): String? =
+        (jwtProvider.parse(token, type) as? TokenParseResult.Valid)?.userId
 
     private suspend fun blacklistToken(token: String) {
         val remaining = jwtProvider.getRemainingExpiry(token)
@@ -391,12 +417,6 @@ class AuthService(
         // 저장보다 먼저 한다 — 저장 후 무효화가 실패하면 비밀번호만 바뀌고 옛 세션이 남는다.
         tokenRevocationStore.revokeAll(user.userId)
         userRepository.save(user.copy(password = passwordEncoder.encode(request.newPassword)))
-    }
-
-    suspend fun updateFcmToken(userId: String, fcmToken: String) {
-        val user = userRepository.findByUserId(userId)
-            ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-        userRepository.save(user.copy(fcmToken = fcmToken))
     }
 
     private fun issueTokens(userId: String, authTime: Instant) = TokenResponse(

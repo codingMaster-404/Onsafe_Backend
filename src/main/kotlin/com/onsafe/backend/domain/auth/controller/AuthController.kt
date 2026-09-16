@@ -46,10 +46,12 @@ class AuthController(
     @PostMapping("/logout")
     suspend fun logout(
         @RequestHeader(value = "Authorization", required = false) authorization: String?,
-        @RequestHeader(value = "Refresh-Token", required = false) refreshToken: String?
+        @RequestHeader(value = "Refresh-Token", required = false) refreshToken: String?,
+        // 선택 본문 — FCM 토큰을 함께 보내면 그 기기 토큰까지 한 번에 해제한다(B2).
+        @RequestBody(required = false) request: LogoutRequest?
     ): ApiResponse<Unit> {
         val accessToken = authorization?.removePrefix("Bearer ")
-        authService.logout(accessToken, refreshToken)
+        authService.logout(accessToken, refreshToken, request)
         return ApiResponse.ok(message = "로그아웃 완료")
     }
 

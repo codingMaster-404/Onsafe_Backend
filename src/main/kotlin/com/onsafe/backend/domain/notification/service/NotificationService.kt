@@ -1,9 +1,11 @@
 package com.onsafe.backend.domain.notification.service
 
+import com.google.firebase.messaging.AndroidConfig
+import com.google.firebase.messaging.AndroidNotification
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingException
-import com.google.firebase.messaging.Message
 import com.google.firebase.messaging.MessagingErrorCode
+import com.google.firebase.messaging.MulticastMessage
 import com.google.firebase.messaging.Notification as FcmNotification
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
@@ -13,6 +15,7 @@ import com.onsafe.backend.domain.notification.model.dto.NotificationLogResponse
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.model.dto.NotificationResponse
 import com.onsafe.backend.domain.notification.model.entity.Notification
+import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.user.model.entity.User
 import com.onsafe.backend.domain.user.repository.UserRepository
@@ -22,11 +25,19 @@ import kotlinx.coroutines.coroutineScope
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 
+// 앱(PushNotifications.kt)이 만든 알림 채널 ID. 서버가 android.notification.channel_id로 실어
+// 보내야 백그라운드 알림에도 채널이 적용된다.
+private const val CHANNEL_ALERTS = "onsafe_alerts"   // 낙상·오프라인 등 즉시 확인이 필요한 알림
+private const val CHANNEL_PAIRING = "onsafe_pairing" // 보호자 연결 상태 변화
+private const val EVENT_KEY = "event"
+private const val PAIRING_EVENT_PREFIX = "pairing"
+
 @Service
 class NotificationService(
     private val userRepository: UserRepository,
     private val notificationRepository: NotificationRepository,
-    private val guardianLinkRepository: GuardianLinkRepository
+    private val guardianLinkRepository: GuardianLinkRepository,
+    private val fcmTokenRepository: FcmTokenRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -53,34 +64,77 @@ class NotificationService(
             )
         )
 
-        val fcmToken = user.fcmToken
-            ?: return NotificationResponse(status = "ok", message = "FCM 토큰이 없습니다.", fcmMessageId = "")
+        // 기기별 토큰 전부에 보낸다(B8). 예전에는 계정당 토큰 1개라 마지막에 앱을 켠 기기만 받았다.
+        val tokens = runCatching { fcmTokenRepository.findAll(user.userId) }
+            .onFailure { e -> log.warn("FCM 토큰 조회 실패 (userId: ${request.userId}): ${e.message}") }
+            .getOrDefault(emptyList())
+        if (tokens.isEmpty()) {
+            return NotificationResponse(status = "ok", message = "FCM 토큰이 없습니다.", fcmMessageId = "")
+        }
 
-        val messageBuilder = Message.builder()
-            .setToken(fcmToken)
+        val messageBuilder = MulticastMessage.builder()
+            .addAllTokens(tokens.map { it.token })
             .setNotification(
                 FcmNotification.builder()
                     .setTitle(request.title)
                     .setBody(request.body)
                     .build()
             )
+            // 앱이 백그라운드·종료 상태면 onMessageReceived가 호출되지 않고 시스템이 알림을 직접
+            // 표시한다. 이때 channel_id가 없으면 앱이 만든 채널(onsafe_alerts: IMPORTANCE_HIGH)이
+            // 적용되지 않아 낙상 알림이 소리·헤드업 없이 조용히 쌓인다. 서버가 채널을 지정해야 한다.
+            .setAndroidConfig(androidConfigFor(request.data?.get(EVENT_KEY)))
         request.data?.forEach { (k, v) -> messageBuilder.putData(k, v) }
 
-        return try {
-            val messageId = FirebaseMessaging.getInstance().sendAsync(messageBuilder.build()).await()
-            NotificationResponse(status = "ok", message = "알림 전송 완료", fcmMessageId = messageId)
-        } catch (e: FirebaseMessagingException) {
-            if (e.messagingErrorCode == MessagingErrorCode.UNREGISTERED) {
-                log.warn("FCM 토큰 만료로 삭제 (userId: ${request.userId})")
-                userRepository.clearFcmToken(request.userId)
-            } else {
-                log.warn("FCM 전송 실패 (userId: ${request.userId}): ${e.message}")
-            }
-            throw BusinessException(ErrorCode.FCM_SEND_FAILED, e)
+        val batch = try {
+            FirebaseMessaging.getInstance().sendEachForMulticastAsync(messageBuilder.build()).await()
         } catch (e: Exception) {
             log.warn("FCM 전송 실패 (userId: ${request.userId}): ${e.message}")
             throw BusinessException(ErrorCode.FCM_SEND_FAILED, e)
         }
+
+        // 토큰별 결과를 받아 만료된 기기만 정리한다 — 예전에는 필드가 하나뿐이라 실패 한 번에
+        // 그 계정의 유일한 토큰이 지워지고 재등록 전까지 전면 미수신이 됐다.
+        batch.responses.forEachIndexed { index, result ->
+            if (result.isSuccessful) return@forEachIndexed
+            val token = tokens[index]
+            val errorCode = (result.exception as? FirebaseMessagingException)?.messagingErrorCode
+            if (errorCode == MessagingErrorCode.UNREGISTERED) {
+                log.warn("FCM 토큰 만료로 삭제 (userId: ${request.userId}, deviceId: ${token.deviceId})")
+                runCatching { fcmTokenRepository.deleteByToken(request.userId, token.token) }
+                    .onFailure { e -> log.warn("만료 토큰 삭제 실패 (userId: ${request.userId}): ${e.message}") }
+            } else {
+                log.warn("FCM 전송 실패 (userId: ${request.userId}, deviceId: ${token.deviceId}): $errorCode")
+            }
+        }
+
+        if (batch.successCount == 0) throw BusinessException(ErrorCode.FCM_SEND_FAILED)
+        val messageId = batch.responses.firstOrNull { it.isSuccessful }?.messageId ?: ""
+        return NotificationResponse(
+            status = "ok",
+            message = "알림 전송 완료 (${batch.successCount}/${tokens.size})",
+            fcmMessageId = messageId
+        )
+    }
+
+    // 앱이 만든 채널 ID와 반드시 같아야 한다(프론트 PushNotifications.CHANNEL_*).
+    private fun androidConfigFor(event: String?): AndroidConfig {
+        val channelId = if (event?.startsWith(PAIRING_EVENT_PREFIX) == true) CHANNEL_PAIRING else CHANNEL_ALERTS
+        return AndroidConfig.builder()
+            .setPriority(AndroidConfig.Priority.HIGH)
+            .setNotification(AndroidNotification.builder().setChannelId(channelId).build())
+            .build()
+    }
+
+    /** FCM 토큰 등록 — 같은 기기가 앱을 켤 때마다 호출되므로 deviceId 기준 upsert. */
+    suspend fun registerFcmToken(userId: String, fcmToken: String, deviceId: String) {
+        userRepository.findByUserId(userId) ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
+        fcmTokenRepository.upsert(userId, deviceId, fcmToken)
+    }
+
+    /** FCM 토큰 해제 — 로그아웃·탈퇴 시 그 기기 것만 지운다(다른 기기는 그대로). */
+    suspend fun unregisterFcmToken(userId: String, fcmToken: String, deviceId: String) {
+        fcmTokenRepository.delete(userId, deviceId, fcmToken)
     }
 
     /**
