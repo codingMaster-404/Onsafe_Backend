@@ -21,6 +21,10 @@ enum class ErrorCode(
     // 로그인한 사용자가 현재 비밀번호를 틀린 경우(verify-password·개인정보 수정)다. 토큰 문제가 아니므로
     // 401이면 앱이 토큰 만료로 보고 재발급 후 틀린 비밀번호를 한 번 더 보낸다 → 400으로 둔다(B7).
     INVALID_PASSWORD(HttpStatus.BAD_REQUEST, "비밀번호가 일치하지 않습니다."),
+    // 개인정보 수정·탈퇴에는 `verify-password`가 발급한 재인증 티켓이 필요하다(B1).
+    // 401이 아닌 400으로 둔다 — 앱이 401을 토큰 만료로 보고 재발급을 시도하는 문제(B7)와 같다.
+    REAUTH_REQUIRED(HttpStatus.BAD_REQUEST, "본인 확인이 필요합니다. 비밀번호를 다시 확인해주세요."),
+
     // 로그인 실패는 공개 경로라 401을 유지한다. 아이디 존재 여부를 흘리지 않도록 사유를 뭉뚱그린다(B3).
     LOGIN_FAILED(HttpStatus.UNAUTHORIZED, "아이디 또는 비밀번호가 일치하지 않습니다."),
     INVALID_TOKEN(HttpStatus.UNAUTHORIZED, "유효하지 않은 토큰입니다."),

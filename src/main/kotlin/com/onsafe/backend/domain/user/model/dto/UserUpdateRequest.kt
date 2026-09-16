@@ -5,6 +5,11 @@ import jakarta.validation.constraints.Pattern
 import jakarta.validation.constraints.Size
 
 data class UserUpdateRequest(
+    // null이면 "변경 안 함"이라 @NotBlank를 쓸 수 없다(null을 거부해버린다). 대신 값이 온 경우에만
+    // 길이와 공백을 검사한다 — 앱은 빈 이름을 막지만 API를 직접 호출하면 ""가 그대로 저장돼
+    // 낙상 알림이 "[] 낙상이 감지되었습니다"로 나간다.
+    @field:Size(min = 1, max = 30, message = "이름은 1자 이상 30자 이하여야 합니다.")
+    @field:Pattern(regexp = "^(?!\\s*\$).+\$", message = "이름을 입력해주세요.")
     val name: String? = null,
 
     val currentPassword: String? = null,
@@ -26,5 +31,13 @@ data class UserUpdateRequest(
 
     val address: String? = null,
 
-    val addressDetail: String? = null
+    val addressDetail: String? = null,
+
+    // verify-password 응답으로 받은 재인증 티켓(B1). 비밀번호를 바꿀 때는 current_password로
+    // 대신할 수 있지만, 그 외 항목(이름·메일·전화·주소) 변경에는 이 티켓이 필요하다.
+    val reauthTicket: String? = null,
+
+    // 메일을 **실제로 바꿀 때만** 필요한 이메일 인증 티켓(verify-email-code 응답).
+    // 앱은 메일을 바꾸지 않아도 현재 값을 함께 보내므로, 값이 달라진 경우에만 요구한다.
+    val emailVerifyTicket: String? = null
 )

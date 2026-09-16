@@ -2,6 +2,7 @@ package com.onsafe.backend.domain.user.service
 
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
+import com.onsafe.backend.common.ratelimit.RateLimiter
 import com.onsafe.backend.common.security.TokenRevocationStore
 import com.onsafe.backend.common.storage.StorageService
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
@@ -12,15 +13,26 @@ import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
+import com.onsafe.backend.common.util.guardRedis
 import com.onsafe.backend.domain.user.model.dto.UserResponse
+import com.onsafe.backend.domain.user.model.dto.VerifyPasswordResponse
 import com.onsafe.backend.domain.user.model.dto.UserUpdateRequest
 import com.onsafe.backend.domain.user.repository.UserRepository
 import kotlinx.coroutines.async
+import kotlinx.coroutines.reactive.awaitFirstOrNull
+import kotlinx.coroutines.reactor.awaitSingle
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.slf4j.LoggerFactory
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
+import java.time.Duration
+import java.util.UUID
+
+// verify-password 성공 후 개인정보 수정·탈퇴까지 허용하는 시간. 재설정 티켓(RESET_TICKET_TTL)과 같은 10분 —
+// 길수록 탈취된 티켓의 유효 시간이 길어진다.
+private const val REAUTH_TICKET_TTL = 600L
 
 @Service
 class UserService(
@@ -35,7 +47,9 @@ class UserService(
     private val guardianLinkRepository: GuardianLinkRepository,
     private val consentRepository: ConsentRepository,
     private val tokenRevocationStore: TokenRevocationStore,
-    private val fcmTokenRepository: FcmTokenRepository
+    private val fcmTokenRepository: FcmTokenRepository,
+    private val rateLimiter: RateLimiter,
+    private val redis: ReactiveStringRedisTemplate
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -46,18 +60,49 @@ class UserService(
         return UserResponse.from(user)
     }
 
+    /**
+     * 개인정보 수정(B1).
+     *
+     * 이전에는 비밀번호를 바꿀 때만 `current_password`를 확인했고, 이름·메일·전화·주소는 **아무 확인 없이**
+     * 저장됐다. 앱은 수정 화면 진입 전 `verify-password`를 부르지만 저장 요청에는 그 사실이 담기지 않아
+     * 서버가 알 수 없었다 — 그래서 재인증 티켓을 받는다.
+     *
+     * 메일·전화는 값이 **실제로 바뀐 경우에만** 인증·중복 검사를 한다. 앱이 바꾸지 않은 항목도 현재 값을
+     * 그대로 실어 보내기 때문에, 필드 존재만 보고 판단하면 이름만 고쳐도 저장이 막힌다.
+     */
     suspend fun updateUser(userId: String, request: UserUpdateRequest): UserResponse {
         val user = userRepository.findByUserId(userId)
             ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-        if (request.password != null) {
-            if (request.currentPassword == null || !passwordEncoder.matches(request.currentPassword, user.password)) {
-                throw BusinessException(ErrorCode.INVALID_PASSWORD)
+
+        val changingPassword = request.password != null
+        val passwordVerified = changingPassword && request.currentPassword != null &&
+            passwordEncoder.matches(request.currentPassword, user.password)
+        val reauthVerified = isReauthVerified(request.reauthTicket, userId)
+        // 본인 확인 수단은 둘 중 하나면 된다 — 티켓(수정 화면) 또는 현재 비밀번호(비밀번호 변경 화면).
+        if (!reauthVerified && !passwordVerified) {
+            throw BusinessException(
+                if (changingPassword) ErrorCode.INVALID_PASSWORD else ErrorCode.REAUTH_REQUIRED
+            )
+        }
+
+        val newMail = request.mail?.takeIf { !it.equals(user.mail, ignoreCase = true) }
+        if (newMail != null) {
+            // 메일 소유 확인 — 가입·아이디 찾기와 같은 티켓을 1회 소비한다(D18과 같은 방침).
+            val ticketMail = log.guardRedis("메일 변경 인증 티켓 소비") {
+                redis.opsForValue().getAndDelete("verify_ticket:${request.emailVerifyTicket}").awaitFirstOrNull()
+            } ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
+            if (!ticketMail.equals(newMail, ignoreCase = true)) {
+                throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
             }
+        }
+
+        if (changingPassword) {
             // 비밀번호를 바꾸면 이 기기를 포함한 모든 세션을 끊는다(완료 문서 D6 — 새 토큰은 발급하지 않고
             // 앱이 재로그인 화면으로 보낸다). 저장보다 먼저 한다 — 저장 후 무효화가 실패하면 비밀번호만
             // 바뀌고 탈취자의 옛 세션이 남는다. 반대로 무효화 후 저장이 실패하면 재로그인 1회로 끝난다.
             tokenRevocationStore.revokeAll(userId)
         }
+
         val updated = user.copy(
             name = request.name ?: user.name,
             password = if (request.password != null) passwordEncoder.encode(request.password) else user.password,
@@ -66,15 +111,60 @@ class UserService(
             address = request.address ?: user.address,
             addressDetail = request.addressDetail ?: user.addressDetail
         )
-        return UserResponse.from(userRepository.save(updated))
+        // 메일·전화 룩업 이동까지 한 트랜잭션으로 — 다른 계정이 쓰는 값이면 409.
+        val saved = userRepository.saveWithLookups(user, updated)
+        if (!saved) {
+            throw BusinessException(
+                if (newMail != null) ErrorCode.MAIL_ALREADY_EXISTS else ErrorCode.PHONE_ALREADY_EXISTS
+            )
+        }
+        // 티켓은 저장이 끝난 뒤에 지운다 — 앞에서 소비하면 전화번호 중복(409)이나 Firestore 일시 오류로
+        // 실패했을 때 티켓만 타 버려, 값 하나 고쳐 다시 저장하려 해도 비밀번호부터 다시 확인해야 한다(D15와 같은 이유).
+        if (reauthVerified) deleteReauthTicket(request.reauthTicket)
+        return UserResponse.from(updated)
     }
 
-    suspend fun verifyPassword(userId: String, currentPassword: String) {
+    /**
+     * 티켓이 유효하고 그 주인이 요청자인지 **확인만** 한다(삭제하지 않음).
+     * 삭제는 저장 성공 후 [deleteReauthTicket]이 맡는다 — 실패한 요청이 티켓을 태우지 않게.
+     * 확인과 삭제가 나뉘어 10분 안에 같은 티켓으로 여러 번 수정할 수는 있지만, 이 티켓은 "본인이
+     * 방금 비밀번호를 확인했다"는 뜻이라 1회성보다 재시도 가능성이 중요하다(재설정 티켓과 다른 점).
+     */
+    private suspend fun isReauthVerified(ticket: String?, userId: String): Boolean {
+        val key = ticket?.takeIf { it.isNotBlank() } ?: return false
+        val ticketUserId = log.guardRedis("재인증 티켓 확인") {
+            redis.opsForValue().get("reauth_ticket:$key").awaitFirstOrNull()
+        }
+        return ticketUserId == userId
+    }
+
+    // 삭제 실패는 요청을 실패시키지 않는다 — 남아도 TTL(10분)로 사라진다.
+    private suspend fun deleteReauthTicket(ticket: String?) {
+        val key = ticket?.takeIf { it.isNotBlank() } ?: return
+        runCatching { redis.delete("reauth_ticket:$key").awaitSingle() }
+            .onFailure { e -> log.warn("재인증 티켓 삭제 실패 — cause={}", e.message) }
+    }
+
+    /**
+     * 비밀번호 사전 확인(B5) — 성공하면 재인증 티켓을 발급한다(B1).
+     *
+     * rate limit이 없으면 탈취한 access 토큰으로 비밀번호를 무제한 대입할 수 있었다.
+     */
+    suspend fun verifyPassword(userId: String, currentPassword: String): VerifyPasswordResponse {
+        rateLimiter.requireAllowed("rl:verify-password:$userId", limit = 5, windowSec = 600)
         val user = userRepository.findByUserId(userId)
             ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
         if (!passwordEncoder.matches(currentPassword, user.password)) {
             throw BusinessException(ErrorCode.INVALID_PASSWORD)
         }
+
+        val ticket = UUID.randomUUID().toString()
+        log.guardRedis("재인증 티켓 저장") {
+            redis.opsForValue()
+                .set("reauth_ticket:$ticket", userId, Duration.ofSeconds(REAUTH_TICKET_TTL))
+                .awaitSingle()
+        }
+        return VerifyPasswordResponse(reauthTicket = ticket)
     }
 
     suspend fun deleteUser(userId: String) {

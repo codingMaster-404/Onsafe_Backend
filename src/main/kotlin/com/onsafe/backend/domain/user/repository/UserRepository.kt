@@ -16,6 +16,18 @@ class UserRepository(private val firestore: Firestore) {
 
     private val col get() = firestore.collection("users")
 
+    // 룩업 키는 정규화해서 쓴다(C9). 전화는 `@Pattern`이 하이픈을 선택으로 허용해
+    // "010-1234-5678"과 "01012345678"이 다른 키가 되고, 메일은 대소문자만 달라도 다른 키가 돼
+    // **같은 번호·같은 메일로 두 계정이 만들어진다**(중복 검사 우회).
+    // 저장 값은 사용자가 입력한 표기 그대로 두고 키만 정규화한다 — 화면 표시가 달라지지 않게.
+    private fun emailKey(mail: String) = mail.trim().lowercase()
+
+    private fun phoneKey(phone: String) = phone.filter { it.isDigit() }
+
+    private fun emailLookup(mail: String) = firestore.collection("user_emails").document(emailKey(mail))
+
+    private fun phoneLookup(phone: String) = firestore.collection("user_phones").document(phoneKey(phone))
+
     suspend fun findByUserId(userId: String): User? {
         val doc = col.document(userId).get().await()
         return if (doc.exists()) doc.toUser() else null
@@ -29,11 +41,13 @@ class UserRepository(private val firestore: Firestore) {
     suspend fun existsByUserId(userId: String): Boolean =
         col.document(userId).get().await().exists()
 
+    // 정규화된 룩업 문서로 확인한다 — users 필드 쿼리는 대소문자·하이픈 차이를 못 걸러
+    // 사전 확인은 "사용 가능"인데 가입 트랜잭션에서 409가 나는 어긋남이 생긴다(C9).
     suspend fun existsByMail(mail: String): Boolean =
-        col.whereEqualTo("mail", mail).get().await().isEmpty.not()
+        emailLookup(mail).get().await().exists()
 
     suspend fun existsByPhone(phone: String): Boolean =
-        col.whereEqualTo("phone", phone).get().await().isEmpty.not()
+        phoneLookup(phone).get().await().exists()
 
     suspend fun save(user: User): User {
         col.document(user.userId).set(user.toMap()).await()
@@ -51,8 +65,8 @@ class UserRepository(private val firestore: Firestore) {
         additionalWrites: List<Pair<DocumentReference, Map<String, Any?>>> = emptyList()
     ): Boolean {
         val userRef = col.document(user.userId)
-        val emailRef = firestore.collection("user_emails").document(user.mail)
-        val phoneRef = firestore.collection("user_phones").document(user.phone)
+        val emailRef = emailLookup(user.mail)
+        val phoneRef = phoneLookup(user.phone)
         val lookupData = mapOf("user_id" to user.userId)
         return firestore.createAllIfAllAbsent(
             docsToCheck = listOf(userRef, emailRef, phoneRef),
@@ -72,11 +86,50 @@ class UserRepository(private val firestore: Firestore) {
     // 탈퇴 cascade에서 users 본문 삭제와 별도로 호출해야 다음 가입 사이클에서 같은 mail/phone을
     // 다시 쓸 수 있다 — 룩업이 남아 있으면 트랜잭션의 유일성 검사에 걸려 재가입이 막힌다.
     suspend fun deleteEmailLookup(mail: String) {
-        firestore.collection("user_emails").document(mail).delete().await()
+        emailLookup(mail).delete().await()
     }
 
     suspend fun deletePhoneLookup(phone: String) {
-        firestore.collection("user_phones").document(phone).delete().await()
+        phoneLookup(phone).delete().await()
+    }
+
+    /**
+     * 개인정보 수정 전용 — 사용자 문서 저장과 메일·전화 룩업 **이동**을 한 트랜잭션으로 처리한다(B1).
+     *
+     * 예전에는 `save()`만 해서 룩업이 가입 시점 값에 멈춰 있었다. 그래서 ① 다른 계정과 같은 메일·번호를
+     * 가질 수 있었고 ② 바꾸기 전 메일 룩업이 영구히 남아 **아무도 그 메일로 재가입할 수 없었다**.
+     *
+     * @return false = 새 메일·전화를 다른 계정이 이미 쓰고 있음(호출부가 409로 변환)
+     */
+    suspend fun saveWithLookups(old: User, updated: User): Boolean {
+        val mailChanged = emailKey(old.mail) != emailKey(updated.mail)
+        val phoneChanged = phoneKey(old.phone) != phoneKey(updated.phone)
+        if (!mailChanged && !phoneChanged) {
+            save(updated)
+            return true
+        }
+
+        val userRef = col.document(updated.userId)
+        val newEmailRef = if (mailChanged) emailLookup(updated.mail) else null
+        val newPhoneRef = if (phoneChanged) phoneLookup(updated.phone) else null
+        val lookupData = mapOf("user_id" to updated.userId)
+
+        return firestore.runTransaction { tx ->
+            // Firestore 트랜잭션은 모든 read가 write보다 앞서야 한다 — future를 먼저 받아 병렬화한다.
+            val emailFuture = newEmailRef?.let { tx.get(it) }
+            val phoneFuture = newPhoneRef?.let { tx.get(it) }
+            val taken = emailFuture?.get()?.exists() == true || phoneFuture?.get()?.exists() == true
+            if (taken) return@runTransaction false
+
+            tx.set(userRef, updated.toMap())
+            newEmailRef?.let { tx.set(it, lookupData) }
+            newPhoneRef?.let { tx.set(it, lookupData) }
+            // 이전 룩업은 새 룩업을 만든 뒤 같은 트랜잭션에서 지운다 — 따로 지우면 그 사이에
+            // 다른 사용자가 옛 메일로 가입해 이력이 뒤섞일 수 있다.
+            if (mailChanged) tx.delete(emailLookup(old.mail))
+            if (phoneChanged) tx.delete(phoneLookup(old.phone))
+            true
+        }.await()
     }
 
     private fun DocumentSnapshot.toUser() = User(
