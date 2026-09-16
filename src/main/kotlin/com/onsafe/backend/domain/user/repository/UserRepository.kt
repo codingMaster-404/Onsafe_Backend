@@ -7,12 +7,16 @@ import com.onsafe.backend.common.util.await
 import com.onsafe.backend.common.util.createAllIfAllAbsent
 import com.onsafe.backend.common.util.toLocalDateTime
 import com.onsafe.backend.common.util.toTimestamp
+import com.onsafe.backend.domain.user.model.entity.DeletionTask
 import com.onsafe.backend.domain.user.model.entity.User
 import org.springframework.stereotype.Repository
 import java.time.LocalDateTime
 
 @Repository
-class UserRepository(private val firestore: Firestore) {
+class UserRepository(
+    private val firestore: Firestore,
+    private val deletionTaskRepository: DeletionTaskRepository
+) {
 
     private val col get() = firestore.collection("users")
 
@@ -68,8 +72,12 @@ class UserRepository(private val firestore: Firestore) {
         val emailRef = emailLookup(user.mail)
         val phoneRef = phoneLookup(user.phone)
         val lookupData = mapOf("user_id" to user.userId)
+        // 파기가 끝나지 않은 userId로는 가입할 수 없다(C5). 탈퇴는 계정 문서를 먼저 지우고 나머지
+        // 정리를 잡에 넘기므로, 그 사이 같은 userId로 재가입하면 잡이 **새 계정의 데이터를 지운다**.
+        // 잡이 파기를 끝내고 task를 삭제하면 그때부터 가입할 수 있다.
+        val deletionTaskRef = deletionTaskRepository.documentRef(user.userId)
         return firestore.createAllIfAllAbsent(
-            docsToCheck = listOf(userRef, emailRef, phoneRef),
+            docsToCheck = listOf(userRef, emailRef, phoneRef, deletionTaskRef),
             docsToWrite = listOf(
                 userRef to user.toMap(),
                 emailRef to lookupData,
@@ -80,6 +88,25 @@ class UserRepository(private val firestore: Firestore) {
 
     suspend fun deleteByUserId(userId: String) {
         col.document(userId).delete().await()
+    }
+
+    /**
+     * 탈퇴의 임계 구간(C5) — **파기 작업 기록과 계정 문서 삭제를 한 트랜잭션으로** 처리한다.
+     *
+     * 탈퇴는 소요 시간이 데이터 양에 비례해 가변인데 이를 동기 요청 안에서 끝내려 하면 클라이언트
+     * 연결이 작업의 생명줄이 된다 — 앱의 읽기 타임아웃(OkHttp 기본 10초)·앱 종료·네트워크 끊김·
+     * 인스턴스 종료가 모두 "절반만 지워지고 계정은 남은" 상태를 만든다.
+     *
+     * 이 두 쓰기만 원자적으로 끝내면 ① 사용자 관점에서는 탈퇴가 완료됐고(계정 소멸)
+     * ② 남은 정리는 task를 보고 잡이 책임진다. 이후 어느 시점에 중단돼도 결과가 갈라지지 않는다.
+     */
+    suspend fun createDeletionTaskAndDeleteUser(task: DeletionTask) {
+        val userRef = col.document(task.userId)
+        val taskRef = deletionTaskRepository.documentRef(task.userId)
+        firestore.runTransaction { tx ->
+            tx.set(taskRef, deletionTaskRepository.toMap(task))
+            tx.delete(userRef)
+        }.await()
     }
 
     // 회원가입 시 함께 생성한 user_emails/{mail}, user_phones/{phone} 룩업 문서를 정리한다.

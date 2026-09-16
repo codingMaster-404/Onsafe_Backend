@@ -5,6 +5,7 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.domain.auth.model.dto.FcmTokenRequest
 import com.onsafe.backend.domain.notification.service.NotificationService
+import com.onsafe.backend.domain.user.model.dto.DeleteUserRequest
 import com.onsafe.backend.domain.user.model.dto.UserResponse
 import com.onsafe.backend.domain.user.model.dto.UserUpdateRequest
 import com.onsafe.backend.domain.user.model.dto.VerifyPasswordRequest
@@ -88,10 +89,11 @@ class UserController(
     @DeleteMapping("/{userId}")
     suspend fun deleteUser(
         @PathVariable userId: String,
-        @AuthenticationPrincipal principal: String
+        @AuthenticationPrincipal principal: String,
+        @Valid @RequestBody request: DeleteUserRequest
     ): ApiResponse<Unit> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
-        userService.deleteUser(userId)
+        userService.deleteUser(userId, request.reauthTicket)
         return ApiResponse.ok(message = "회원 탈퇴가 완료되었습니다.")
     }
 }

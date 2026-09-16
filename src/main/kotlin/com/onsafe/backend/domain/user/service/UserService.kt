@@ -14,10 +14,13 @@ import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.common.util.guardRedis
+import com.onsafe.backend.domain.user.model.entity.DeletionTask
 import com.onsafe.backend.domain.user.model.dto.UserResponse
 import com.onsafe.backend.domain.user.model.dto.VerifyPasswordResponse
 import com.onsafe.backend.domain.user.model.dto.UserUpdateRequest
+import com.onsafe.backend.domain.user.repository.DeletionTaskRepository
 import com.onsafe.backend.domain.user.repository.UserRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.reactive.awaitFirstOrNull
 import kotlinx.coroutines.reactor.awaitSingle
@@ -49,7 +52,8 @@ class UserService(
     private val tokenRevocationStore: TokenRevocationStore,
     private val fcmTokenRepository: FcmTokenRepository,
     private val rateLimiter: RateLimiter,
-    private val redis: ReactiveStringRedisTemplate
+    private val redis: ReactiveStringRedisTemplate,
+    private val deletionTaskRepository: DeletionTaskRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -167,44 +171,70 @@ class UserService(
         return VerifyPasswordResponse(reauthTicket = ticket)
     }
 
-    suspend fun deleteUser(userId: String) {
-        // findByUserId를 앞에서 한 번만 수행 — 아래 cascade에서 user_emails/{mail},
-        // user_phones/{phone} 룩업 문서를 지우려면 mail/phone 값이 필요하다.
+    /**
+     * 회원 탈퇴(C5) — **완료 책임을 HTTP 연결에서 분리한다.**
+     *
+     * 탈퇴는 소요 시간이 데이터 양(영상 수·문서 수)에 비례해 가변인데, 이전에는 이를 동기 요청 안에서
+     * 끝내려 해 클라이언트 연결이 작업의 생명줄이었다. 앱의 읽기 타임아웃(OkHttp 기본 10초)·앱 종료·
+     * 네트워크 끊김·인스턴스 종료가 전부 "절반만 지워지고 계정은 남은" 상태로 수렴했다.
+     *
+     * 이제 순서는 이렇다.
+     *  ① 재인증 티켓 확인(B6)  ② 전 기기 세션 무효화
+     *  ③ **파기 작업 기록 + 계정 문서 삭제를 한 트랜잭션으로**(여기까지 밀리초)
+     *  ④ 나머지 정리는 best-effort — 중단되면 `deletion_tasks`를 보고 잡이 마무리한다
+     *
+     * ③ 이전에 실패하면 **아무것도 지워지지 않아** 재시도가 안전하고, ③ 이후에는 **반드시 완료된다.**
+     */
+    suspend fun deleteUser(userId: String, reauthTicket: String?) {
+        // 룩업 키(mail·phone)와 blob 경로(logIds)는 계정 문서가 사라지면 알 수 없다 — 미리 확보해 task에 싣는다.
         val user = userRepository.findByUserId(userId)
             ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-        // 삭제를 시작하기 전에 모든 세션을 끊는다. 캐스케이드 도중 다른 기기가 계속 요청해 데이터를 다시
-        // 만들거나, 같은 userId로 재가입한 사람이 옛 토큰으로 새 계정에 접근하는 것을 막는다.
-        // 무효화가 실패하면(Redis 장애) 아무것도 지우지 않은 채 503으로 끝나 재시도할 수 있다.
+
+        // 되돌릴 수 없는 작업이라 본인 확인을 요구한다(B6). 티켓은 verify-password가 발급한다(D25).
+        if (!isReauthVerified(reauthTicket, userId)) throw BusinessException(ErrorCode.REAUTH_REQUIRED)
+
+        // 세션부터 끊는다. 실패하면(Redis 장애) 아무것도 지우지 않은 채 503으로 끝나 재시도할 수 있다.
         tokenRevocationStore.revokeAll(userId)
-        // 개인정보보호법 제21조: 회원탈퇴 시 지체 없이 파기. Firestore 문서만 지우면
-        // GCS 라이프사이클(gcs-lifecycle.json 상 최대 180일)까지 원본 영상이 남으므로
-        // logId를 먼저 수집해 blob을 삭제한 뒤 Firestore를 지운다.
-        // blob 삭제 실패는 계정 삭제를 막지 않는다(사용자가 "탈퇴가 안 된다" 상태에 갇히지 않도록) —
-        // 개별 실패는 warn 로그로 남겨 사후 파기 재시도가 가능하도록 한다.
+
         val logIds = fallLogRepository.findLogIdsByUserId(userId)
-        // GCS blob 삭제는 개별 GCS SDK 호출이라 서로 독립적 — 병렬로 처리해 blob 개수에 비례해
-        // 탈퇴 응답이 느려지지 않게 한다. 개별 실패는 여전히 warn 로그만 남기고 탈퇴는 계속 진행.
+        val task = DeletionTask(userId = userId, mail = user.mail, phone = user.phone, logIds = logIds)
+
+        // ③ 임계 구간 — 이 트랜잭션이 끝나면 사용자 관점에서 탈퇴는 완료다(계정 소멸).
+        userRepository.createDeletionTaskAndDeleteUser(task)
+        deleteReauthTicket(reauthTicket)
+
+        // ④ 여기서부터는 중단돼도 무방하다 — task가 남아 있으므로 잡이 이어서 끝낸다.
+        try {
+            purge(task)
+            deletionTaskRepository.delete(userId)
+        } catch (e: CancellationException) {
+            // 클라이언트가 끊겼거나 인스턴스가 종료되는 중이다. task가 남아 잡이 마무리한다.
+            log.info("탈퇴 정리 중단(잡이 이어서 처리) — userId={}", userId)
+            throw e
+        } catch (e: Exception) {
+            log.warn("탈퇴 정리 일부 실패(잡이 재시도) — userId={}, cause={}", userId, e.javaClass.simpleName)
+        }
+    }
+
+    /**
+     * 파기 본체 — **멱등**하다. 요청 경로와 재시도 잡이 같은 코드를 쓴다.
+     * 이미 지워진 대상을 다시 지워도 문제가 없어야 몇 번을 재실행하든 결과가 같다.
+     *
+     * 개인정보보호법 제21조: 회원탈퇴 시 지체 없이 파기. Firestore 문서만 지우면 GCS 라이프사이클
+     * (최대 180일)까지 원본 영상이 남으므로 blob도 함께 지운다.
+     */
+    suspend fun purge(task: DeletionTask) {
+        val userId = task.userId
+        // GCS blob 삭제는 개별 SDK 호출이라 서로 독립적 — 병렬로 처리한다.
         coroutineScope {
-            logIds.map { logId ->
-                async {
-                    runCatching { storageService.deleteBlob("fall-videos/$logId.mp4") }
-                        .onFailure { e ->
-                            log.warn(
-                                "fall-video blob 삭제 실패 — userId={}, logId={}, cause={}",
-                                userId, logId, e.javaClass.simpleName
-                            )
-                        }
-                }
+            task.logIds.map { logId ->
+                async { guarded("fall-video:$logId", userId) { storageService.deleteBlob("fall-videos/$logId.mp4") } }
             }.awaitAll()
         }
 
-        // 아래 7개 삭제는 서로 다른 컬렉션에 대한 독립적인 Firestore 요청이라 병렬로 처리한다.
-        // notifyElderAndGuardians가 피보호자 본인 + 보호자 각각에게 별도 알림 문서를 남기므로,
-        // deleteByUserId(본인 알림)만으로는 부족해 방금 수집한 logIds로 보호자 인박스에 남은
-        // 관련 알림 사본까지 deleteByLogIds로 함께 정리한다.
-        // 위 blob 삭제와 동일하게 각 작업을 runCatching으로 격리한다 — 격리하지 않으면 하나가
-        // 예외를 던질 때 coroutineScope가 나머지 형제 코루틴을 취소해(구조적 동시성) 일부
-        // 컬렉션만 지워진 불확실한 상태로 남고, 맨 아래 계정 문서 삭제까지 막혀버린다.
+        // 서로 다른 컬렉션에 대한 독립적인 요청이라 병렬로 처리한다.
+        // notifyElderAndGuardians가 피보호자 본인 + 보호자 각각에게 알림 문서를 남기므로,
+        // 본인 알림(deleteByUserId)만으로는 부족해 logIds로 보호자 인박스 사본까지 정리한다.
         coroutineScope {
             val deletions = listOf(
                 "fall_logs" to suspend { fallLogRepository.deleteByUserId(userId) },
@@ -212,27 +242,49 @@ class UserService(
                 "login_history" to suspend { loginHistoryRepository.deleteByUserId(userId) },
                 "settings" to suspend { settingsRepository.deleteByUserId(userId) },
                 "notifications(본인)" to suspend { notificationRepository.deleteByUserId(userId) },
-                "notifications(보호자 사본)" to suspend { notificationRepository.deleteByLogIds(logIds) },
+                "notifications(보호자 사본)" to suspend { notificationRepository.deleteByLogIds(task.logIds) },
                 "guardian_links" to suspend { guardianLinkRepository.deleteAllInvolving(userId) },
                 "consents" to suspend { consentRepository.deleteByUserId(userId) },
                 // 사용자 문서 하위 서브컬렉션이라 계정 문서를 지워도 남는다 — 명시적으로 정리(B8).
                 "fcm_tokens" to suspend { fcmTokenRepository.deleteAll(userId) },
-                "user_emails" to suspend { userRepository.deleteEmailLookup(user.mail) },
-                "user_phones" to suspend { userRepository.deletePhoneLookup(user.phone) }
+                "user_emails" to suspend { userRepository.deleteEmailLookup(task.mail) },
+                "user_phones" to suspend { userRepository.deletePhoneLookup(task.phone) },
+                // 탈퇴해도 TTL 만료 전까지 남는 Redis 키 정리(D6).
+                "redis_keys" to suspend { deleteRedisLeftovers(userId) },
             )
             deletions.map { (name, delete) ->
-                async {
-                    runCatching { delete() }
-                        .onFailure { e ->
-                            log.warn(
-                                "탈퇴 시 연쇄 삭제 실패 — userId={}, collection={}, cause={}",
-                                userId, name, e.javaClass.simpleName
-                            )
-                        }
-                }
+                async { guarded(name, userId) { delete() } }
             }.awaitAll()
         }
-        // 계정 문서 자체는 위 정리가 전부 끝난 뒤 마지막에 지운다.
-        userRepository.deleteByUserId(userId)
+    }
+
+    /**
+     * 대상별 실패를 격리하되 **취소는 반드시 다시 던진다**(`guardRedis`와 같은 규칙).
+     * 취소까지 삼키면 ① 이미 끝난 삭제가 "실패"로 기록되고 ② 구조적 동시성 때문에 이후 단계가
+     * 실행되지 않은 채 조용히 끝난다 — 이 함수가 그 두 가지를 모두 막는다.
+     */
+    private suspend fun guarded(target: String, userId: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("탈퇴 파기 실패 — userId={}, target={}, cause={}", userId, target, e.javaClass.simpleName)
+            throw e // 상위(purge 호출부)가 task를 남겨 잡이 재시도하게 한다
+        }
+    }
+
+    /** 탈퇴 후 TTL 만료 전까지 남는 Redis 키 정리(D6). 페어링 코드는 owner 키로 역추적해 함께 지운다. */
+    private suspend fun deleteRedisLeftovers(userId: String) {
+        log.guardRedis("탈퇴 Redis 키 정리") {
+            // 무효화 키(token_valid_after:{userId})는 **지우지 않는다** — 지우면 탈퇴 전에 발급된
+            // 토큰이 다시 통과한다. TTL(30일)로 자연 소멸하게 둔다.
+            val code = redis.opsForValue().getAndDelete("pairing_code_owner:$userId").awaitFirstOrNull()
+            val keys = buildList {
+                add("reset_code:$userId")
+                if (code != null) add("pairing_code:$code")
+            }
+            redis.delete(*keys.toTypedArray()).awaitSingle()
+        }
     }
 }

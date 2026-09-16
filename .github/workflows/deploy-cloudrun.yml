@@ -96,6 +96,34 @@ jobs:
 
           URL=$(gcloud run services describe ${{ env.KOTLIN_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
           echo "Kotlin API URL: $URL"
+
+      # 잡 엔드포인트는 있는데 트리거가 어디에도 등록돼 있지 않았다(C12) — 로그인 이력 정리와
+      # 카메라 오프라인 워치독이 운영에서 실행되지 않는 상태였다. 인프라는 CI/CD로만 구성하므로
+      # 여기서 등록한다. create가 이미 있으면 실패하므로 update로 떨어뜨려 재실행 가능하게 둔다.
+      - name: Register Cloud Scheduler jobs
+        run: |
+          KOTLIN_URL=$(gcloud run services describe ${{ env.KOTLIN_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
+          SECRET=$(gcloud secrets versions access latest --secret=INTERNAL_JOB_SECRET)
+          register() {
+            name="$1"; cron="$2"
+            gcloud scheduler jobs create http "onsafe-${name}" \
+              --location=${{ env.GCP_REGION }} \
+              --schedule="${cron}" --time-zone="Asia/Seoul" \
+              --uri="${KOTLIN_URL}/internal/jobs/${name}" \
+              --http-method=POST \
+              --headers="X-Internal-Auth=${SECRET}" \
+              --quiet \
+            || gcloud scheduler jobs update http "onsafe-${name}" \
+              --location=${{ env.GCP_REGION }} \
+              --schedule="${cron}" --time-zone="Asia/Seoul" \
+              --uri="${KOTLIN_URL}/internal/jobs/${name}" \
+              --http-method=POST \
+              --headers="X-Internal-Auth=${SECRET}" \
+              --quiet
+          }
+          register "login-history-cleanup" "0 3 * * *"
+          register "heartbeat-watchdog"    "*/5 * * * *"
+          register "deletion-retry"        "0 * * * *"
           echo "url=$URL" >> $GITHUB_OUTPUT
 
   # ────────────────────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.common.security.InternalAuthGuard
 import com.onsafe.backend.domain.auth.service.LoginHistoryCleanupJob
 import com.onsafe.backend.domain.camera.service.HeartbeatWatchdogJob
+import com.onsafe.backend.domain.user.service.DeletionRetryJob
 import io.swagger.v3.oas.annotations.Operation
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestHeader
@@ -22,6 +23,7 @@ import org.springframework.web.bind.annotation.RestController
 class InternalJobController(
     private val loginHistoryCleanupJob: LoginHistoryCleanupJob,
     private val heartbeatWatchdogJob: HeartbeatWatchdogJob,
+    private val deletionRetryJob: DeletionRetryJob,
     private val internalAuthGuard: InternalAuthGuard
 ) {
 
@@ -43,5 +45,15 @@ class InternalJobController(
         internalAuthGuard.require(auth)
         heartbeatWatchdogJob.run()
         return ApiResponse.ok(message = "watchdog triggered")
+    }
+
+    @Operation(summary = "탈퇴 파기 재시도 (Cloud Scheduler 트리거)", security = [])
+    @PostMapping("/deletion-retry")
+    suspend fun runDeletionRetry(
+        @RequestHeader(value = "X-Internal-Auth", required = false) auth: String?
+    ): ApiResponse<Unit> {
+        internalAuthGuard.require(auth)
+        deletionRetryJob.run()
+        return ApiResponse.ok(message = "deletion retry triggered")
     }
 }
