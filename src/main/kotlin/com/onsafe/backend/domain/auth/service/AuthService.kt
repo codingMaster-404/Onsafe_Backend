@@ -60,11 +60,6 @@ class AuthService(
 
     // 검증 실패를 그대로 BusinessException으로 올린다 — 만료(EXPIRED)와 무효(INVALID)를 구분해
     // 던져야 클라이언트가 refresh 시도 vs 강제 로그아웃을 나눠 처리할 수 있다.
-    // 없는 아이디일 때도 비교할 대상이 필요하다(B3). 매번 새로 만들면 그것만큼 느려져
-    // 오히려 시간차가 생기므로, 처음 한 번만 만들어 둔다. 값 자체는 쓰이지 않고
-    // BCrypt 비교에 걸리는 시간만 필요하다. 기동 시간을 늘리지 않게 lazy로 둔다.
-    private val dummyPasswordHash: String by lazy { passwordEncoder.encode(UUID.randomUUID().toString()) }
-
     private fun TokenParseResult.valueOrThrow(): TokenParseResult.Valid = when (this) {
         is TokenParseResult.Valid -> this
         is TokenParseResult.Invalid -> throw BusinessException(errorCode)
@@ -269,11 +264,11 @@ class AuthService(
         rateLimiter.requireAllowed("rl:login:uid:${request.userId}", limit = 5, windowSec = 60)
         val user = userRepository.findByUserId(request.userId)
         if (user == null) {
-            // 응답 코드를 LOGIN_FAILED로 맞춰도 BCrypt 비교를 건너뛰면 응답이 그만큼 빨라
-            // **응답 시간으로 가입 여부가 드러난다.** 더미 해시와 비교해 걸리는 시간을 맞춘다(B3).
-            passwordEncoder.matches(request.password, dummyPasswordHash)
+            // 없는 아이디는 404 USER_NOT_FOUND로 그대로 알려준다 — 사용자가 "아이디가 없다"와
+            // "비밀번호가 틀렸다"를 구분해서 볼 수 있어야 한다는 UX 판단(완료 문서 D21).
+            // 계정 존재 여부는 어차피 check-id(409)로 확인할 수 있어 로그인만 가려도 실익이 적다.
             recordLoginHistory(request.userId, ipAddress, userAgent, false, ErrorCode.USER_NOT_FOUND.name)
-            throw BusinessException(ErrorCode.LOGIN_FAILED)
+            throw BusinessException(ErrorCode.USER_NOT_FOUND)
         }
 
         if (!passwordEncoder.matches(request.password, user.password)) {
