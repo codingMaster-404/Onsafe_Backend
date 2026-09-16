@@ -2,7 +2,6 @@ package com.onsafe.backend.common.exception
 
 import com.onsafe.backend.common.response.ApiResponse
 import org.slf4j.LoggerFactory
-import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
@@ -19,7 +18,7 @@ class GlobalExceptionHandler {
     fun handleBusinessException(e: BusinessException): ResponseEntity<ApiResponse<Nothing>> {
         return ResponseEntity
             .status(e.errorCode.status)
-            .body(ApiResponse.fail(e.errorCode.message))
+            .body(ApiResponse.fail(e.errorCode.message, e.errorCode.name))
     }
 
     @ExceptionHandler(WebExchangeBindException::class)
@@ -27,8 +26,8 @@ class GlobalExceptionHandler {
         val message = e.bindingResult.fieldErrors
             .joinToString(", ") { "${it.field}: ${it.defaultMessage}" }
         return ResponseEntity
-            .status(HttpStatus.BAD_REQUEST)
-            .body(ApiResponse.fail(message))
+            .status(ErrorCode.INVALID_INPUT.status)
+            .body(ApiResponse.fail(message, ErrorCode.INVALID_INPUT.name))
     }
 
     /** JSON 역직렬화 실패 (필드명 불일치, 타입 오류 등) → 500 대신 400 반환 */
@@ -43,22 +42,22 @@ class GlobalExceptionHandler {
             else -> "요청 형식이 올바르지 않습니다."
         }
         return ResponseEntity
-            .status(HttpStatus.BAD_REQUEST)
-            .body(ApiResponse.fail(message))
+            .status(ErrorCode.INVALID_INPUT.status)
+            .body(ApiResponse.fail(message, ErrorCode.INVALID_INPUT.name))
     }
 
     @ExceptionHandler(MethodNotAllowedException::class)
     fun handleMethodNotAllowed(e: MethodNotAllowedException): ResponseEntity<ApiResponse<Nothing>> {
         return ResponseEntity
-            .status(HttpStatus.METHOD_NOT_ALLOWED)
-            .body(ApiResponse.fail("지원하지 않는 HTTP 메서드입니다."))
+            .status(ErrorCode.METHOD_NOT_ALLOWED.status)
+            .body(ApiResponse.fail(ErrorCode.METHOD_NOT_ALLOWED.message, ErrorCode.METHOD_NOT_ALLOWED.name))
     }
 
     @ExceptionHandler(Exception::class)
     fun handleException(e: Exception): ResponseEntity<ApiResponse<Nothing>> {
         log.error("Unhandled exception: ${e::class.simpleName} - ${e.message}", e)
         return ResponseEntity
-            .status(HttpStatus.INTERNAL_SERVER_ERROR)
-            .body(ApiResponse.fail("서버 내부 오류가 발생했습니다."))
+            .status(ErrorCode.INTERNAL_ERROR.status)
+            .body(ApiResponse.fail(ErrorCode.INTERNAL_ERROR.message, ErrorCode.INTERNAL_ERROR.name))
     }
 }

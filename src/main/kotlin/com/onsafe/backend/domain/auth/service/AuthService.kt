@@ -4,6 +4,7 @@ import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.ratelimit.RateLimiter
 import com.onsafe.backend.common.security.JwtProvider
+import com.onsafe.backend.common.security.TokenParseResult
 import com.onsafe.backend.common.security.TokenRevocationStore
 import com.onsafe.backend.common.security.TokenType
 import com.onsafe.backend.common.security.VerificationCodeGenerator
@@ -50,6 +51,13 @@ class AuthService(
 
     private val log = LoggerFactory.getLogger(javaClass)
 
+    // 검증 실패를 그대로 BusinessException으로 올린다 — 만료(EXPIRED)와 무효(INVALID)를 구분해
+    // 던져야 클라이언트가 refresh 시도 vs 강제 로그아웃을 나눠 처리할 수 있다.
+    private fun TokenParseResult.valueOrThrow(): TokenParseResult.Valid = when (this) {
+        is TokenParseResult.Valid -> this
+        is TokenParseResult.Invalid -> throw BusinessException(errorCode)
+    }
+
     // access token만 블랙리스트하면 refresh token으로 재발급이 계속 가능해 로그아웃의
     // 보안 효과가 제한적이므로, 두 토큰 모두를 각자 남은 만료 시간만큼 블랙리스트한다.
     suspend fun logout(accessToken: String?, refreshToken: String?) {
@@ -73,13 +81,13 @@ class AuthService(
     // 주기(1시간)마다 사실상 리셋된다.
     suspend fun validateAccessToken(accessToken: String?) {
         if (accessToken.isNullOrBlank()) throw BusinessException(ErrorCode.INVALID_TOKEN)
-        jwtProvider.getValidationError(accessToken, TokenType.ACCESS)?.let { throw BusinessException(it) }
+        val parsed = jwtProvider.parse(accessToken, TokenType.ACCESS).valueOrThrow()
         val blacklisted = log.guardRedis("access token 블랙리스트 조회") {
             redis.opsForValue().get(jwtProvider.blacklistKey(accessToken)).awaitFirstOrNull()
         }
         if (blacklisted != null) throw BusinessException(ErrorCode.INVALID_TOKEN)
         // 탈퇴·비밀번호 변경·재설정으로 끊긴 세션이면 자동 로그인도 막는다.
-        if (tokenRevocationStore.isRevoked(jwtProvider.getUserId(accessToken), jwtProvider.getIssuedAt(accessToken))) {
+        if (tokenRevocationStore.isRevoked(parsed.userId, parsed.issuedAt)) {
             throw BusinessException(ErrorCode.INVALID_TOKEN)
         }
     }
@@ -239,8 +247,11 @@ class AuthService(
         }
 
         if (!passwordEncoder.matches(request.password, user.password)) {
+            // 실패 사유(INVALID_PASSWORD)는 이력에만 남기고 응답은 LOGIN_FAILED(401)로 뭉뚱그린다.
+            // INVALID_PASSWORD는 B7에서 400이 됐는데, 로그인 실패까지 400이면 앱이 토큰 흐름과
+            // 무관한 실패를 다르게 다뤄야 한다. 아이디 존재 여부 은폐(B3 나머지)는 5단계.
             recordLoginHistory(user.userId, ipAddress, userAgent, false, ErrorCode.INVALID_PASSWORD.name)
-            throw BusinessException(ErrorCode.INVALID_PASSWORD)
+            throw BusinessException(ErrorCode.LOGIN_FAILED)
         }
 
         recordLoginHistory(user.userId, ipAddress, userAgent, true, null)
@@ -283,11 +294,11 @@ class AuthService(
     }
 
     suspend fun refresh(refreshToken: String): TokenResponse {
-        jwtProvider.getValidationError(refreshToken, TokenType.REFRESH)?.let { throw BusinessException(it) }
-        val userId = jwtProvider.getUserId(refreshToken)
+        val parsed = jwtProvider.parse(refreshToken, TokenType.REFRESH).valueOrThrow()
+        val userId = parsed.userId
 
         // 사용자 단위로 끊긴 세션(탈퇴·비밀번호 변경·재설정)이면 재발급하지 않는다.
-        if (tokenRevocationStore.isRevoked(userId, jwtProvider.getIssuedAt(refreshToken))) {
+        if (tokenRevocationStore.isRevoked(userId, parsed.issuedAt)) {
             throw BusinessException(ErrorCode.INVALID_TOKEN)
         }
         // 무효화 키는 TTL(30일) 뒤 사라지므로, 탈퇴한 계정은 존재 여부로도 한 번 더 막는다.
@@ -297,7 +308,7 @@ class AuthService(
         // 세션이 갈라진다. 발급 직전에 블랙리스트 키를 SET NX로 선점해 선점한 요청 하나만 발급한다.
         // 키가 이미 있으면 로그아웃·이전 재발급·동시 요청 중 하나다. 앞의 검사에서 실패하면 선점하지
         // 않으므로 Firestore 장애 같은 일시 오류로 토큰이 소모되지 않는다.
-        val remaining = jwtProvider.getRemainingExpiry(refreshToken)
+        val remaining = parsed.remainingExpiry
         if (remaining <= Duration.ZERO) throw BusinessException(ErrorCode.EXPIRED_TOKEN) // 검증 직후 만료된 경계
         val claimed = log.guardRedis("refresh 토큰 선점") {
             redis.opsForValue().setIfAbsent(jwtProvider.blacklistKey(refreshToken), "1", remaining).awaitSingle()
@@ -305,7 +316,9 @@ class AuthService(
         if (!claimed) throw BusinessException(ErrorCode.INVALID_TOKEN)
 
         // 로그인 시각(auth_time)을 이어받아 새 토큰도 로그인 기준 30일에 만료되게 한다.
-        return issueTokens(userId, jwtProvider.getAuthTime(refreshToken))
+        // refresh 토큰은 검증에서 auth_time 존재를 보장하지만(JwtProvider.hasExpectedShape) 타입상 nullable이다.
+        val authTime = parsed.authTime ?: throw BusinessException(ErrorCode.INVALID_TOKEN)
+        return issueTokens(userId, authTime)
     }
 
     suspend fun findId(request: FindIdRequest): FindIdResponse {

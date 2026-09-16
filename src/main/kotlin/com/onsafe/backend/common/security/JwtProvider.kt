@@ -29,6 +29,22 @@ enum class TokenType(val claimValue: String) {
     REFRESH("refresh")
 }
 
+/**
+ * 토큰 검증 결과 — 검증과 클레임 조회를 파싱 한 번으로 끝내기 위해 필요한 값을 함께 돌려준다(C7 ③).
+ * 검증과 조회를 나눠 두면 호출부가 같은 토큰을 2~5번 파싱한다(매번 HMAC 서명 검증 + JSON 파싱).
+ */
+sealed interface TokenParseResult {
+    /** [authTime]은 refresh 토큰에만 있다. [remainingExpiry]는 exp가 없으면 0이다. */
+    data class Valid(
+        val userId: String,
+        val issuedAt: Instant,
+        val authTime: Instant?,
+        val remainingExpiry: Duration
+    ) : TokenParseResult
+
+    data class Invalid(val errorCode: ErrorCode) : TokenParseResult
+}
+
 @Component
 class JwtProvider(
     @Value("\${jwt.secret}") secret: String,
@@ -67,41 +83,46 @@ class JwtProvider(
             .compact()
     }
 
-    fun getUserId(token: String): String =
-        parseClaims(token).subject
-
-    fun getAuthTime(token: String): Instant =
-        Instant.ofEpochSecond((parseClaims(token)[AUTH_TIME_CLAIM] as Number).toLong())
-
-    // 세션 무효화 판정(TokenRevocationStore)에 쓴다. JWT iat는 초 단위다.
-    fun getIssuedAt(token: String): Instant =
-        parseClaims(token).issuedAt.toInstant()
-
     /**
-     * 토큰 유효성 검사 — 만료와 서명/형식/타입 오류를 구분해 ErrorCode로 반환.
-     * null 이면 [expectedType] 용도로 쓸 수 있는 유효한 토큰.
+     * 토큰 검증 + 클레임 조회 — 파싱 1회.
+     * 유효하면 [TokenParseResult.Valid]에 호출부가 쓰는 클레임(userId·iat·auth_time·남은 만료)을 담아 주고,
+     * 아니면 만료와 서명/형식/타입 오류를 구분해 [TokenParseResult.Invalid]로 돌려준다.
      * typ이 없는 옛 토큰은 전환 처리 없이 INVALID_TOKEN이다.
      */
-    fun getValidationError(token: String, expectedType: TokenType): ErrorCode? = try {
-        if (hasExpectedShape(parseClaims(token), expectedType)) null else ErrorCode.INVALID_TOKEN
+    fun parse(token: String, expectedType: TokenType): TokenParseResult = try {
+        toResult(parseClaims(token), expectedType)
     } catch (e: ExpiredJwtException) {
         // jjwt는 서명 검증 후 exp 검증에서 예외를 던지므로 parseClaims의 알고리즘 확인과
         // 호출부의 타입 확인을 거치지 않는다. 같은 기준을 여기서도 적용해, 만료 전이면 INVALID인
         // 토큰이 만료 후 EXPIRED로 바뀌지 않게 한다 — EXPIRED는 "refresh하면 해결된다"는 뜻이라
         // 잘못된 토큰(다른 타입·typ 없는 옛 토큰·HS256 외 알고리즘)에 주면 클라이언트가 refresh를 시도한다.
         if (isAllowedAlgorithm(e.header) && hasExpectedShape(e.claims, expectedType)) {
-            ErrorCode.EXPIRED_TOKEN
+            TokenParseResult.Invalid(ErrorCode.EXPIRED_TOKEN)
         } else {
-            ErrorCode.INVALID_TOKEN
+            TokenParseResult.Invalid(ErrorCode.INVALID_TOKEN)
         }
     } catch (e: Exception) {
-        ErrorCode.INVALID_TOKEN
+        TokenParseResult.Invalid(ErrorCode.INVALID_TOKEN)
     }
 
-    fun getRemainingExpiry(token: String): Duration = runCatching {
-        val remaining = parseClaims(token).expiration.time - System.currentTimeMillis()
-        if (remaining > 0) Duration.ofMillis(remaining) else Duration.ZERO
-    }.getOrDefault(Duration.ZERO)
+    private fun toResult(claims: Claims, expectedType: TokenType): TokenParseResult {
+        if (!hasExpectedShape(claims, expectedType)) return TokenParseResult.Invalid(ErrorCode.INVALID_TOKEN)
+        return TokenParseResult.Valid(
+            userId = claims.subject,
+            issuedAt = claims.issuedAt.toInstant(), // 세션 무효화 판정 기준값(TokenRevocationStore). JWT iat는 초 단위다
+            authTime = (claims[AUTH_TIME_CLAIM] as? Number)?.let { Instant.ofEpochSecond(it.toLong()) },
+            remainingExpiry = remainingOf(claims)
+        )
+    }
+
+    // 로그아웃은 access·refresh를 타입 구분 없이 블랙리스트하므로 parse(expectedType) 대신 이 함수를 쓴다.
+    fun getRemainingExpiry(token: String): Duration =
+        runCatching { remainingOf(parseClaims(token)) }.getOrDefault(Duration.ZERO)
+
+    private fun remainingOf(claims: Claims): Duration {
+        val remaining = (claims.expiration?.time ?: return Duration.ZERO) - System.currentTimeMillis()
+        return if (remaining > 0) Duration.ofMillis(remaining) else Duration.ZERO
+    }
 
     // Redis 키/슬로우로그/백업 등에 토큰 원문이 그대로 남지 않도록 해시로 치환한다.
     // 저장(AuthService)과 조회(JwtAuthenticationFilter) 양쪽이 반드시 이 함수 하나만 써야
