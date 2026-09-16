@@ -18,6 +18,10 @@ from app.domain.camera.schemas import StreamResponse
 
 logger = logging.getLogger(__name__)
 
+# Kotlin /internal/* 는 JWT 필터를 타지 않고 공개 노출돼 있어 이 헤더로만 호출자를 구분한다.
+# 값이 비면 Kotlin이 403으로 거부한다(fail-closed) — 배포 시 두 서비스에 같은 시크릿을 넣어야 한다.
+_INTERNAL_HEADERS = {"X-Internal-Auth": settings.internal_job_secret}
+
 _REALTIME = "realtime_data"
 _REALTIME_LIMIT = 2000
 
@@ -45,7 +49,14 @@ async def process_frame(landmarks: list, timestamp: float, user_id: str, device_
     level = classify_level(score)
 
     await save_score(user_id, score, level)
-    await _save_realtime_data(user_id, features, raw_score)  # 분석용 원본 score 보존 (sticky 미적용)
+    # [중단 2026-09-16] 분석용 features 적재 — 읽는 코드가 어디에도 없어 중단했다(§4 C11).
+    #   · 앱·Kotlin·AI 추론 어느 쪽도 이 데이터를 조회하지 않는다(전수 검색 확인).
+    #   · 사용자당 최대 2000문서 × 50필드가 쌓이는데 관절 각도 시계열은 건강 관련 민감정보에 가깝다.
+    #   · Kotlin realtime_data/{userId}(현재 점수·상태)와 같은 컬렉션에 자동 ID로 섞여 있어
+    #     탈퇴 캐스케이드(문서 ID = userId 단건 삭제)가 이 문서들을 지우지 못한다.
+    # 재학습 등으로 다시 필요하면 아래 한 줄을 되살리면 된다. 단 그때는 별도 컬렉션
+    # (예: realtime_features)로 분리하고 탈퇴 삭제 대상에 함께 넣어야 한다.
+    # await _save_realtime_data(user_id, features, raw_score)  # 분석용 원본 score 보존 (sticky 미적용)
     await _update_realtime(user_id, score, level)
 
     log_id: str | None = None
@@ -59,6 +70,8 @@ async def process_frame(landmarks: list, timestamp: float, user_id: str, device_
     return StreamResponse(score=score, fall=fall, level=level, log_id=log_id)
 
 
+# [현재 미사용] process_frame에서 호출을 주석 처리했다(위 [중단 2026-09-16] 참고).
+# 되살릴 때를 위해 구현은 그대로 둔다 — 컬렉션 상수(_REALTIME)·2000개 트림 로직 포함.
 async def _save_realtime_data(user_id: str, features: dict, score: float) -> None:
     if not features:
         return
@@ -107,6 +120,7 @@ async def _update_realtime(user_id: str, score: float, level: str) -> None:
             await client.post(
                 f"{settings.kotlin_internal_base}/internal/realtime",
                 json={"user_id": user_id, "score": score, "level": level},
+                headers=_INTERNAL_HEADERS,
                 timeout=3.0,
             )
     except Exception as e:
@@ -136,6 +150,7 @@ async def _save_fall_log(user_id: str, device_id: str, score: float, fall: bool,
                     "is_confirmed": False,
                     "video_url": video_url,  # GCS 경로 or 에뮬레이터 URL
                 },
+                headers=_INTERNAL_HEADERS,
                 timeout=3.0,
             )
     except Exception as e:

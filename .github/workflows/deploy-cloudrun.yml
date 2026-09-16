@@ -166,7 +166,7 @@ jobs:
             --max-instances 5 \
             --timeout 600 \
             --set-env-vars "TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_URL=redis://${{ vars.REDIS_HOST }}:6379,KOTLIN_INTERNAL_BASE=${{ steps.kotlin_url.outputs.url }}" \
-            --set-secrets "JWT_SECRET=JWT_SECRET:latest" \
+            --set-secrets "JWT_SECRET=JWT_SECRET:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest" \
             --quiet
 
           URL=$(gcloud run services describe ${{ env.PYTHON_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
