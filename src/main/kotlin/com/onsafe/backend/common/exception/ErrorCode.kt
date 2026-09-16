@@ -38,7 +38,6 @@ enum class ErrorCode(
     USER_ID_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 사용 중인 아이디입니다."),
 
     // ── 비밀번호 재설정 ────────────────────────────────────
-    MAIL_NOT_MATCH(HttpStatus.BAD_REQUEST, "이메일이 일치하지 않습니다."),
     INVALID_RESET_CODE(HttpStatus.BAD_REQUEST, "유효하지 않은 인증코드입니다. 코드가 만료되었거나 올바르지 않습니다."),
 
     // ── 이메일 인증 ────────────────────────────────────────

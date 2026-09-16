@@ -25,13 +25,14 @@ import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
+import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
 private const val EMAIL_CODE_TTL = 180L    // 3분
 private const val RESET_CODE_TTL = 180L    // 3분
-private const val RESET_VERIFIED_TTL = 600L // 10분 — verifyResetCode 성공 후 resetPassword 가능 시간
+private const val RESET_TICKET_TTL = 600L // 10분 — verifyResetCode가 발급한 재설정 티켓의 수명
 private const val EMAIL_VERIFY_TICKET_TTL = 900L // 15분 — verifyEmailCode 성공 후 register 가능 시간 (가입 폼 입력 항목이 많아 RESET_VERIFIED_TTL보다 여유를 둠)
 
 @Service
@@ -50,6 +51,11 @@ class AuthService(
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
+
+    // 인증코드 비교는 상수 시간으로 한다(D2). `!=`는 첫 불일치 문자에서 즉시 빠져나와 응답 시간에
+    // 일치한 자릿수가 드러난다. 코드가 6자리 고정이라 길이 차이로 새는 정보는 없다.
+    private fun codeMatches(stored: String, input: String): Boolean =
+        MessageDigest.isEqual(stored.toByteArray(Charsets.UTF_8), input.toByteArray(Charsets.UTF_8))
 
     // 검증 실패를 그대로 BusinessException으로 올린다 — 만료(EXPIRED)와 무효(INVALID)를 구분해
     // 던져야 클라이언트가 refresh 시도 vs 강제 로그아웃을 나눠 처리할 수 있다.
@@ -130,7 +136,7 @@ class AuthService(
         val key = "email_verify:${request.mail}"
         val storedCode = log.guardRedis("email 인증코드 조회") { redis.opsForValue().get(key).awaitFirstOrNull() }
             ?: throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
-        if (storedCode != request.code) throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
+        if (!codeMatches(storedCode, request.code)) throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
 
         val ticket = UUID.randomUUID().toString()
         log.guardRedis("email 인증코드 삭제 및 티켓 저장") {
@@ -142,11 +148,17 @@ class AuthService(
         return VerifyEmailCodeResponse(emailVerifyTicket = ticket)
     }
 
-    suspend fun sendResetCode(request: SendResetCodeRequest) {
+    /**
+     * 아이디·메일이 맞지 않아도 **같은 성공 응답**을 준다(C2). 이전에는 없는 아이디 404, 메일 불일치 400이라
+     * 응답만으로 가입 여부와 그 계정의 메일 일치 여부를 확인할 수 있었다. 대신 메일은 보내지 않는다.
+     * IP 제한을 함께 둬, 한 IP에서 여러 계정을 대상으로 돌려보는 시도를 막는다(userId 제한만으로는 못 막는다).
+     */
+    suspend fun sendResetCode(request: SendResetCodeRequest, ipAddress: String) {
         rateLimiter.requireAllowed("rl:send-reset:${request.userId}", limit = 3, windowSec = 3600)
+        rateLimiter.requireAllowed("rl:send-reset:ip:$ipAddress", limit = 10, windowSec = 3600)
         val user = userRepository.findByUserId(request.userId)
-            ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-        if (user.mail != request.mail) throw BusinessException(ErrorCode.MAIL_NOT_MATCH)
+        // 존재 여부·일치 여부를 응답으로 구분하지 않으므로 여기서 조용히 끝낸다. 실패 사유 기록은 C6(9단계).
+        if (user == null || user.mail != request.mail) return
 
         val code = verificationCodeGenerator.generate()
         log.guardRedis("reset 인증코드 저장") {
@@ -157,18 +169,27 @@ class AuthService(
         emailService.sendResetCode(request.mail, code)
     }
 
-    suspend fun verifyResetCode(request: VerifyResetCodeRequest) {
+    /**
+     * 인증 성공 시 `reset_verified:{userId}` 플래그 대신 **UUID 티켓**을 발급해 응답으로 돌려준다(A3).
+     * 플래그 방식은 "이 userId가 인증을 마쳤다"는 사실만 남아, 인증한 사람과 재설정하는 사람이 같은지
+     * 확인하지 못했다 — userId만 알면 10분 안에 누구나 비밀번호를 바꿀 수 있었다.
+     * 가입 흐름의 이메일 인증 티켓(`verify_ticket:{uuid}`)과 같은 구조다.
+     */
+    suspend fun verifyResetCode(request: VerifyResetCodeRequest): VerifyResetCodeResponse {
         rateLimiter.requireAllowed("rl:verify-reset:${request.userId}", limit = 5, windowSec = 3600)
         val key = "reset_code:${request.userId}"
         val storedCode = log.guardRedis("reset 인증코드 조회") { redis.opsForValue().get(key).awaitFirstOrNull() }
             ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
-        if (storedCode != request.code) throw BusinessException(ErrorCode.INVALID_RESET_CODE)
-        log.guardRedis("reset 인증코드 삭제 및 완료 플래그 저장") {
+        if (!codeMatches(storedCode, request.code)) throw BusinessException(ErrorCode.INVALID_RESET_CODE)
+
+        val ticket = UUID.randomUUID().toString()
+        log.guardRedis("reset 인증코드 삭제 및 티켓 저장") {
             redis.delete(key).awaitSingle()
             redis.opsForValue()
-                .set("reset_verified:${request.userId}", "1", Duration.ofSeconds(RESET_VERIFIED_TTL))
+                .set("reset_ticket:$ticket", request.userId, Duration.ofSeconds(RESET_TICKET_TTL))
                 .awaitSingle()
         }
+        return VerifyResetCodeResponse(resetTicket = ticket)
     }
 
     suspend fun register(request: RegisterRequest, ipAddress: String) {
@@ -329,17 +350,25 @@ class AuthService(
     }
 
     suspend fun resetPassword(request: ResetPasswordRequest) {
-        val verifiedKey = "reset_verified:${request.userId}"
-        log.guardRedis("reset 완료 플래그 조회") { redis.opsForValue().get(verifiedKey).awaitFirstOrNull() }
+        // 사용자 조회를 먼저 한다 — 티켓은 저장 직전에 소비해야 Firestore 일시 오류로 티켓이 타 버려
+        // 인증코드 발송부터 다시 하는 일이 없다(2단계 B4 선점과 같은 방침).
+        // 없는 사용자도 INVALID_RESET_CODE로 돌려준다 — USER_NOT_FOUND를 주면 티켓 없이도
+        // 아이디 존재 여부를 확인할 수 있어 C2로 막은 통로가 여기로 다시 열린다.
+        val user = userRepository.findByUserId(request.userId)
             ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
 
-        val user = userRepository.findByUserId(request.userId)
-            ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
+        // 티켓을 GETDEL로 원자적으로 소비 — 동시 요청이 같은 티켓을 재사용하려 해도 한 요청만 통과한다.
+        val ticketKey = "reset_ticket:${request.resetTicket}"
+        val ticketUserId = log.guardRedis("reset 티켓 소비") {
+            redis.opsForValue().getAndDelete(ticketKey).awaitFirstOrNull()
+        } ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
+        // 티켓에 담긴 userId와 요청의 userId가 다르면 남의 계정을 바꾸려는 요청이다.
+        if (ticketUserId != request.userId) throw BusinessException(ErrorCode.INVALID_RESET_CODE)
+
         // 비밀번호를 잊었거나 탈취가 의심돼 재설정하는 경우라 기존 세션을 모두 끊는다.
         // 저장보다 먼저 한다 — 저장 후 무효화가 실패하면 비밀번호만 바뀌고 옛 세션이 남는다.
         tokenRevocationStore.revokeAll(user.userId)
         userRepository.save(user.copy(password = passwordEncoder.encode(request.newPassword)))
-        log.guardRedis("reset 완료 플래그 삭제") { redis.delete(verifiedKey).awaitSingle() }
     }
 
     suspend fun updateFcmToken(userId: String, fcmToken: String) {

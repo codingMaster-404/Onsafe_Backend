@@ -94,16 +94,22 @@ class AuthController(private val authService: AuthService) {
 
     @Operation(summary = "비밀번호 재설정 인증코드 발송")
     @PostMapping("/send-reset-code")
-    suspend fun sendResetCode(@Valid @RequestBody request: SendResetCodeRequest): ApiResponse<Unit> {
-        authService.sendResetCode(request)
-        return ApiResponse.ok(message = "인증코드가 발송되었습니다.")
+    suspend fun sendResetCode(
+        @Valid @RequestBody request: SendResetCodeRequest,
+        exchange: ServerWebExchange
+    ): ApiResponse<Unit> {
+        authService.sendResetCode(request, exchange.clientIpAddress())
+        // 아이디·메일이 맞지 않아도 같은 응답을 준다(C2). 문구도 발송을 단정하지 않는다.
+        return ApiResponse.ok(message = "입력한 정보가 일치하면 인증코드가 발송됩니다.")
     }
 
     @Operation(summary = "비밀번호 재설정 인증코드 확인")
     @PostMapping("/verify-reset-code")
-    suspend fun verifyResetCode(@Valid @RequestBody request: VerifyResetCodeRequest): ApiResponse<Unit> {
-        authService.verifyResetCode(request)
-        return ApiResponse.ok(message = "인증코드가 확인되었습니다.")
+    suspend fun verifyResetCode(
+        @Valid @RequestBody request: VerifyResetCodeRequest
+    ): ApiResponse<VerifyResetCodeResponse> {
+        val response = authService.verifyResetCode(request)
+        return ApiResponse.ok(response, "인증코드가 확인되었습니다.")
     }
 
     @Operation(summary = "토큰 재발급")
