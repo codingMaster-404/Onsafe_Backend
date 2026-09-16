@@ -30,6 +30,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
+private const val MAX_USER_AGENT_LENGTH = 512 // 로그인 이력에 저장할 User-Agent 최대 길이(D4)
 private const val EMAIL_CODE_TTL = 180L    // 3분
 private const val RESET_CODE_TTL = 180L    // 3분
 private const val RESET_TICKET_TTL = 600L // 10분 — verifyResetCode가 발급한 재설정 티켓의 수명
@@ -59,6 +60,11 @@ class AuthService(
 
     // 검증 실패를 그대로 BusinessException으로 올린다 — 만료(EXPIRED)와 무효(INVALID)를 구분해
     // 던져야 클라이언트가 refresh 시도 vs 강제 로그아웃을 나눠 처리할 수 있다.
+    // 없는 아이디일 때도 비교할 대상이 필요하다(B3). 매번 새로 만들면 그것만큼 느려져
+    // 오히려 시간차가 생기므로, 처음 한 번만 만들어 둔다. 값 자체는 쓰이지 않고
+    // BCrypt 비교에 걸리는 시간만 필요하다. 기동 시간을 늘리지 않게 lazy로 둔다.
+    private val dummyPasswordHash: String by lazy { passwordEncoder.encode(UUID.randomUUID().toString()) }
+
     private fun TokenParseResult.valueOrThrow(): TokenParseResult.Valid = when (this) {
         is TokenParseResult.Valid -> this
         is TokenParseResult.Invalid -> throw BusinessException(errorCode)
@@ -263,8 +269,11 @@ class AuthService(
         rateLimiter.requireAllowed("rl:login:uid:${request.userId}", limit = 5, windowSec = 60)
         val user = userRepository.findByUserId(request.userId)
         if (user == null) {
+            // 응답 코드를 LOGIN_FAILED로 맞춰도 BCrypt 비교를 건너뛰면 응답이 그만큼 빨라
+            // **응답 시간으로 가입 여부가 드러난다.** 더미 해시와 비교해 걸리는 시간을 맞춘다(B3).
+            passwordEncoder.matches(request.password, dummyPasswordHash)
             recordLoginHistory(request.userId, ipAddress, userAgent, false, ErrorCode.USER_NOT_FOUND.name)
-            throw BusinessException(ErrorCode.USER_NOT_FOUND)
+            throw BusinessException(ErrorCode.LOGIN_FAILED)
         }
 
         if (!passwordEncoder.matches(request.password, user.password)) {
@@ -301,7 +310,9 @@ class AuthService(
                     historyId = "",
                     userId = userId,
                     ipAddress = ipAddress,
-                    userAgent = userAgent,
+                    // 길이 제한 없이 저장하면 클라이언트가 긴 User-Agent를 보내 Firestore 문서를 부풀릴 수 있다(D4).
+                    // 모든 이력 저장이 이 함수를 거치므로 여기서만 자른다.
+                    userAgent = userAgent.take(MAX_USER_AGENT_LENGTH),
                     success = success,
                     failReason = failReason
                 )
@@ -342,10 +353,26 @@ class AuthService(
         return issueTokens(userId, authTime)
     }
 
-    suspend fun findId(request: FindIdRequest): FindIdResponse {
+    /**
+     * 메일 소유를 증명한 요청만 받는다(C1). 이전에는 앱 화면에서만 인증을 강제해,
+     * API를 직접 호출하면 이름+메일 조합 대입으로 계정 존재 여부와 마스킹된 아이디를 얻을 수 있었다.
+     * 티켓은 가입(`register`)과 같은 `verify_ticket:{uuid}`다 — "이 메일의 소유자"라는 뜻이라
+     * 용도를 구분할 필요가 없다(작업 문서 §11-2).
+     */
+    suspend fun findId(request: FindIdRequest, ipAddress: String): FindIdResponse {
+        rateLimiter.requireAllowed("rl:find-id:ip:$ipAddress", limit = 10, windowSec = 3600)
+
+        // 조회를 먼저 하되 판단은 티켓 검증 뒤에 한다 — 순서를 바꾸면 Firestore 일시 오류로
+        // 티켓만 타 버리고(D15와 같은 이유), 반대로 조회 결과를 먼저 던지면 티켓 없이도 가입 여부가 새다.
         val user = userRepository.findByMail(request.mail)
-            ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-        if (user.name != request.name) throw BusinessException(ErrorCode.USER_NOT_FOUND)
+
+        // 티켓을 GETDEL로 1회 소비하고, 티켓에 담긴 mail과 요청의 mail이 같아야 인증으로 인정한다.
+        val ticketMail = log.guardRedis("아이디 찾기 인증 티켓 소비") {
+            redis.opsForValue().getAndDelete("verify_ticket:${request.emailVerifyTicket}").awaitFirstOrNull()
+        } ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
+        if (ticketMail != request.mail) throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
+
+        if (user == null || user.name != request.name) throw BusinessException(ErrorCode.USER_NOT_FOUND)
         return FindIdResponse(userId = maskUserId(user.userId))
     }
 

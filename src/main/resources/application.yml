@@ -14,6 +14,13 @@ spring:
 server:
   port: 8080
 
+# rate limit·로그인 이력에 쓸 클라이언트 IP를 X-Forwarded-For에서 고를 때,
+# 오른쪽에서 몇 번째 값까지가 우리 인프라가 붙인 값인지(C3).
+# 현재 배포: Kotlin API는 Cloud Run에 직접 노출(--allow-unauthenticated, ingress 기본값) → 1.
+# 앞단에 외부 로드밸런서를 두면 TRUSTED_PROXY_COUNT=2로 바꾸면 된다(코드 수정 불필요).
+app:
+  trusted-proxy-count: ${TRUSTED_PROXY_COUNT:1}
+
 firebase:
   credentials: ${FIREBASE_CREDENTIALS:serviceAccountKey.json}
   storage:

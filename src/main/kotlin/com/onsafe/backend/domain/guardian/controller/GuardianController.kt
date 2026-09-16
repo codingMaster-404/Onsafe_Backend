@@ -3,7 +3,7 @@ package com.onsafe.backend.domain.guardian.controller
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
-import com.onsafe.backend.common.util.clientIpAddress
+import com.onsafe.backend.common.util.ClientIpResolver
 import com.onsafe.backend.domain.guardian.model.dto.GuardianResponse
 import com.onsafe.backend.domain.guardian.model.dto.PairRequest
 import com.onsafe.backend.domain.guardian.model.dto.PairingCodeResponse
@@ -21,7 +21,10 @@ import org.springframework.web.server.ServerWebExchange
 @Tag(name = "Guardian", description = "보호자 페어링 API")
 @RestController
 @RequestMapping("/api/guardian")
-class GuardianController(private val guardianService: GuardianService) {
+class GuardianController(
+    private val guardianService: GuardianService,
+    private val clientIpResolver: ClientIpResolver
+) {
 
     @Operation(
         summary = "페어링 코드 발급 (피보호자용)",
@@ -51,7 +54,7 @@ class GuardianController(private val guardianService: GuardianService) {
         exchange: ServerWebExchange
     ): ApiResponse<PairingRequestResponse> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
-        return ApiResponse.ok(guardianService.pair(userId, request.code, exchange.clientIpAddress()), "연결 요청이 전송되었습니다.")
+        return ApiResponse.ok(guardianService.pair(userId, request.code, clientIpResolver.resolve(exchange)), "연결 요청이 전송되었습니다.")
     }
 
     @Operation(

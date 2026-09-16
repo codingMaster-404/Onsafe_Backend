@@ -1,7 +1,7 @@
 package com.onsafe.backend.domain.auth.controller
 
 import com.onsafe.backend.common.response.ApiResponse
-import com.onsafe.backend.common.util.clientIpAddress
+import com.onsafe.backend.common.util.ClientIpResolver
 import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.service.AuthService
 import io.swagger.v3.oas.annotations.Operation
@@ -14,7 +14,10 @@ import org.springframework.web.server.ServerWebExchange
 @Tag(name = "Auth", description = "인증 API")
 @RestController
 @RequestMapping("/api/auth")
-class AuthController(private val authService: AuthService) {
+class AuthController(
+    private val authService: AuthService,
+    private val clientIpResolver: ClientIpResolver
+) {
 
     @Operation(summary = "회원가입")
     @PostMapping("/register")
@@ -23,7 +26,7 @@ class AuthController(private val authService: AuthService) {
         @Valid @RequestBody request: RegisterRequest,
         exchange: ServerWebExchange
     ): ApiResponse<Unit> {
-        authService.register(request, exchange.clientIpAddress())
+        authService.register(request, clientIpResolver.resolve(exchange))
         return ApiResponse.ok(message = "회원가입이 완료되었습니다.")
     }
 
@@ -33,7 +36,7 @@ class AuthController(private val authService: AuthService) {
         @Valid @RequestBody request: LoginRequest,
         exchange: ServerWebExchange
     ): ApiResponse<LoginResponse> {
-        val ipAddress = exchange.clientIpAddress()
+        val ipAddress = clientIpResolver.resolve(exchange)
         val userAgent = exchange.request.headers.getFirst("User-Agent") ?: "unknown"
         val response = authService.login(request, ipAddress, userAgent)
         return ApiResponse.ok(response)
@@ -52,8 +55,11 @@ class AuthController(private val authService: AuthService) {
 
     @Operation(summary = "아이디 찾기")
     @PostMapping("/find-id")
-    suspend fun findId(@Valid @RequestBody request: FindIdRequest): ApiResponse<FindIdResponse> {
-        val response = authService.findId(request)
+    suspend fun findId(
+        @Valid @RequestBody request: FindIdRequest,
+        exchange: ServerWebExchange
+    ): ApiResponse<FindIdResponse> {
+        val response = authService.findId(request, clientIpResolver.resolve(exchange))
         return ApiResponse.ok(response)
     }
 
@@ -98,7 +104,7 @@ class AuthController(private val authService: AuthService) {
         @Valid @RequestBody request: SendResetCodeRequest,
         exchange: ServerWebExchange
     ): ApiResponse<Unit> {
-        authService.sendResetCode(request, exchange.clientIpAddress())
+        authService.sendResetCode(request, clientIpResolver.resolve(exchange))
         // 아이디·메일이 맞지 않아도 같은 응답을 준다(C2). 문구도 발송을 단정하지 않는다.
         return ApiResponse.ok(message = "입력한 정보가 일치하면 인증코드가 발송됩니다.")
     }
