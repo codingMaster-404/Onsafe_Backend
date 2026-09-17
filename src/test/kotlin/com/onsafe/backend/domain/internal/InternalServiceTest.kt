@@ -2,6 +2,8 @@ package com.onsafe.backend.domain.internal
 
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
+import com.onsafe.backend.domain.user.model.entity.User
+import com.onsafe.backend.domain.user.repository.UserRepository
 import com.onsafe.backend.domain.internal.model.dto.SaveFallLogRequest
 import com.onsafe.backend.domain.internal.service.InternalService
 import com.onsafe.backend.domain.logs.model.entity.FallLog
@@ -25,6 +27,7 @@ class InternalServiceTest {
     private val fallLogRepository: FallLogRepository = mockk()
     private val notificationService: NotificationService = mockk()
     private val guardianLinkRepository: GuardianLinkRepository = mockk()
+    private val userRepository: UserRepository = mockk()
     private lateinit var internalService: InternalService
 
     private val baseRequest = SaveFallLogRequest(
@@ -37,11 +40,24 @@ class InternalServiceTest {
         videoUrl = null
     )
 
+    private val baseUser = User(
+        userId = "testUser",
+        password = "encoded",
+        name = "홍길동",
+        phone = "010-1234-5678",
+        mail = "test@example.com",
+    )
+
     @BeforeEach
     fun setUp() {
-        internalService = InternalService(realtimeDataRepository, fallLogRepository, notificationService, guardianLinkRepository)
+        internalService = InternalService(
+            realtimeDataRepository, fallLogRepository, notificationService,
+            guardianLinkRepository, userRepository
+        )
         // 기존 테스트들이 guardian 있는 정상 경로를 가정하고 있으므로 기본값 true.
         coEvery { guardianLinkRepository.existsByElder(any()) } returns true
+        // 탈퇴 후 재생성을 막는 계정 존재 확인(C10) — 기존 테스트는 정상 계정을 가정한다.
+        coEvery { userRepository.findByUserId(any()) } returns baseUser
     }
 
     // ── DB 저장 보장 ──────────────────────────────────────────────
