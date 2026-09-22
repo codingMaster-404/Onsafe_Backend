@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.firebase import init_firebase
-from app.domain.camera.router import router as camera_router, ws_router as camera_ws_router
+from app.domain.camera.router import ws_router as camera_ws_router
 from app.domain.devices.router import router as devices_router
 
 logging.config.dictConfig({
@@ -66,6 +66,5 @@ def health() -> dict:
     }
 
 
-app.include_router(camera_router)
 app.include_router(camera_ws_router)
 app.include_router(devices_router)

@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     jwt_access_expiry: int = 3600
     jwt_refresh_expiry: int = 604800
     kotlin_internal_base: str = "http://localhost:8080"
+    # Kotlin /internal/* 호출 시 X-Internal-Auth 헤더로 보낼 시크릿.
+    # Secret Manager 슬롯 INTERNAL_JOB_SECRET 과 같은 값이어야 한다 — 비어 있으면 Kotlin이 403.
+    internal_job_secret: str = ""
     # CORS: 쉼표로 구분된 허용 출처 목록. 미설정 시 Kotlin 서버만 허용
     cors_origins: str = ""
 

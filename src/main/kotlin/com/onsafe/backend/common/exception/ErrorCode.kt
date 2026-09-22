@@ -9,6 +9,8 @@ enum class ErrorCode(
     // ── 공통 ──────────────────────────────────────────────
     FORBIDDEN(HttpStatus.FORBIDDEN, "접근 권한이 없습니다."),
     INVALID_INPUT(HttpStatus.BAD_REQUEST, "요청 값이 유효하지 않습니다."),
+    METHOD_NOT_ALLOWED(HttpStatus.METHOD_NOT_ALLOWED, "지원하지 않는 HTTP 메서드입니다."),
+    INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 내부 오류가 발생했습니다."),
     TOO_MANY_REQUESTS(HttpStatus.TOO_MANY_REQUESTS, "요청이 너무 많습니다. 잠시 후 다시 시도해주세요."),
     REDIS_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "일시적으로 요청을 처리할 수 없습니다. 잠시 후 다시 시도해주세요."),
 
@@ -16,7 +18,15 @@ enum class ErrorCode(
     USER_NOT_FOUND(HttpStatus.NOT_FOUND, "사용자를 찾을 수 없습니다."),
     MAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 사용 중인 이메일입니다."),
     PHONE_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 사용 중인 전화번호입니다."),
-    INVALID_PASSWORD(HttpStatus.UNAUTHORIZED, "비밀번호가 일치하지 않습니다."),
+    // 로그인한 사용자가 현재 비밀번호를 틀린 경우(verify-password·개인정보 수정)다. 토큰 문제가 아니므로
+    // 401이면 앱이 토큰 만료로 보고 재발급 후 틀린 비밀번호를 한 번 더 보낸다 → 400으로 둔다(B7).
+    INVALID_PASSWORD(HttpStatus.BAD_REQUEST, "비밀번호가 일치하지 않습니다."),
+    // 개인정보 수정·탈퇴에는 `verify-password`가 발급한 재인증 티켓이 필요하다(B1).
+    // 401이 아닌 400으로 둔다 — 앱이 401을 토큰 만료로 보고 재발급을 시도하는 문제(B7)와 같다.
+    REAUTH_REQUIRED(HttpStatus.BAD_REQUEST, "본인 확인이 필요합니다. 비밀번호를 다시 확인해주세요."),
+
+    // 로그인 실패는 공개 경로라 401을 유지한다. 아이디 존재 여부를 흘리지 않도록 사유를 뭉뚱그린다(B3).
+    LOGIN_FAILED(HttpStatus.UNAUTHORIZED, "아이디 또는 비밀번호가 일치하지 않습니다."),
     INVALID_TOKEN(HttpStatus.UNAUTHORIZED, "유효하지 않은 토큰입니다."),
     EXPIRED_TOKEN(HttpStatus.UNAUTHORIZED, "만료된 토큰입니다."),
 
@@ -32,7 +42,6 @@ enum class ErrorCode(
     USER_ID_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 사용 중인 아이디입니다."),
 
     // ── 비밀번호 재설정 ────────────────────────────────────
-    MAIL_NOT_MATCH(HttpStatus.BAD_REQUEST, "이메일이 일치하지 않습니다."),
     INVALID_RESET_CODE(HttpStatus.BAD_REQUEST, "유효하지 않은 인증코드입니다. 코드가 만료되었거나 올바르지 않습니다."),
 
     // ── 이메일 인증 ────────────────────────────────────────

@@ -11,6 +11,10 @@ data class ResetPasswordRequest(
     @field:NotBlank(message = "아이디를 입력해주세요.")
     val userId: String,
 
+    // verifyResetCode 응답의 티켓(A3). 서버가 GETDEL로 소비한 뒤 저장된 userId와 위 userId를 대조한다.
+    @field:NotBlank(message = "재설정 인증 정보가 없습니다. 인증코드 확인부터 다시 진행해주세요.")
+    val resetTicket: String,
+
     @field:Size(min = 8, max = 64, message = "비밀번호는 8자 이상 64자 이하여야 합니다.")
     // (?s)로 DOTALL 지정 — 없으면 "."이 개행(\n)과 매치되지 않아, 정상 비밀번호라도
     // 클립보드 붙여넣기·IME 이슈로 개행이 섞이면 ".+$"가 끝까지 못 가 거부된다.

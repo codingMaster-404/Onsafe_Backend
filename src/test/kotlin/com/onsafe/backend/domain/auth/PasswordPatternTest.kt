@@ -73,7 +73,7 @@ class PasswordPatternTest {
     @Test
     fun `ResetPasswordRequest도 개행 포함 비밀번호를 통과시킨다`() {
         val violations = validator.validate(
-            ResetPasswordRequest(userId = "testUser", newPassword = "abc123!\nXY")
+            ResetPasswordRequest(userId = "testUser", resetTicket = "ticket", newPassword = "abc123!\nXY")
         )
         assertFalse(violations.any { it.propertyPath.toString() == "newPassword" })
     }
@@ -81,7 +81,7 @@ class PasswordPatternTest {
     @Test
     fun `ResetPasswordRequest는 특수문자 없으면 거부한다`() {
         val violations = validator.validate(
-            ResetPasswordRequest(userId = "testUser", newPassword = "abcd1234")
+            ResetPasswordRequest(userId = "testUser", resetTicket = "ticket", newPassword = "abcd1234")
         )
         assertTrue(violations.any { it.propertyPath.toString() == "newPassword" })
     }

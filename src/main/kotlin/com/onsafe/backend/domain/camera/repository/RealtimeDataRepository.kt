@@ -3,6 +3,7 @@ package com.onsafe.backend.domain.camera.repository
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.onsafe.backend.common.util.await
+import com.onsafe.backend.common.util.deleteInBatches
 import com.onsafe.backend.common.util.toLocalDateTime
 import com.onsafe.backend.common.util.toTimestamp
 import com.onsafe.backend.domain.camera.model.entity.RealtimeData
@@ -24,9 +25,17 @@ class RealtimeDataRepository(private val firestore: Firestore) {
         return data
     }
 
-    // 문서 ID가 곧 userId라 단건 delete로 충분(추가 쿼리 불필요).
+    /**
+      * 상태 문서(`realtime_data/{userId}`)와, 예전에 Python AI 서버가 같은 컬렉션에 자동 ID로 쌓아 둔
+      * 분석용 features 문서를 함께 지운다(C11).
+      *
+      * 적재는 중단했지만(`_save_realtime_data` 주석 처리) **이미 쌓인 문서가 남아 있다.** 단건 delete만
+      * 하던 이전 구현은 이 문서들을 놓쳐 탈퇴 후에도 관절 각도 시계열이 남았다 — 파기 의무 대상이다.
+      */
     suspend fun deleteByUserId(userId: String) {
         col.document(userId).delete().await()
+        val legacyDocs = col.whereEqualTo("user_id", userId).get().await().documents
+        firestore.deleteInBatches(legacyDocs.map { it.reference })
     }
 
     // 앱 heartbeat 진입점. score/level 같은 AI 파이프라인 값은 건드리지 않고 heartbeat 관련

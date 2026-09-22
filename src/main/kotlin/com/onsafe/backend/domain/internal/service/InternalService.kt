@@ -9,6 +9,7 @@ import com.onsafe.backend.domain.internal.model.dto.UpdateRealtimeRequest
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.domain.notification.service.NotificationService
+import com.onsafe.backend.domain.user.repository.UserRepository
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 
@@ -18,6 +19,7 @@ class InternalService(
     private val fallLogRepository: FallLogRepository,
     private val notificationService: NotificationService,
     private val guardianLinkRepository: GuardianLinkRepository,
+    private val userRepository: UserRepository,
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
@@ -28,7 +30,17 @@ class InternalService(
     private suspend fun hasGuardian(userId: String): Boolean =
         guardianLinkRepository.existsByElder(userId)
 
+    // 탈퇴는 계정 문서를 먼저 지우고 나머지 정리를 잡에 넘긴다(C5). 그 사이 스트리밍이 살아 있으면
+    // 삭제된 계정 명의로 다시 저장될 수 있어, 쓰기 전에 계정 존재를 확인한다(C10).
+    // WS 연결은 5분마다 무효화를 재확인해 끊기지만(C8), 그 창에서도 아무것도 쌓이지 않게 한다.
+    private suspend fun userExists(userId: String): Boolean =
+        userRepository.findByUserId(userId) != null
+
     suspend fun updateRealtime(req: UpdateRealtimeRequest) {
+        if (!userExists(req.userId)) {
+            log.debug("계정 없음 — realtime 저장 스킵 (userId={})", req.userId)
+            return
+        }
         if (!hasGuardian(req.userId)) {
             log.debug("guardian 없음 — realtime 저장 스킵 (userId={})", req.userId)
             return
@@ -40,6 +52,10 @@ class InternalService(
     }
 
     suspend fun saveFallLog(req: SaveFallLogRequest) {
+        if (!userExists(req.userId)) {
+            log.info("계정 없음 — fall log 저장/알림 스킵 (userId={}, logId={})", req.userId, req.logId)
+            return
+        }
         if (!hasGuardian(req.userId)) {
             log.info("guardian 없음 — fall log 저장/알림 스킵 (userId={}, logId={})", req.userId, req.logId)
             return
@@ -55,7 +71,14 @@ class InternalService(
                 videoUrl = req.videoUrl
             )
         )
-        val notifData = mapOf("log_id" to req.logId, "user_id" to req.userId, "score" to req.score.toString())
+        // event 코드를 함께 실어야 앱이 포그라운드에서 이 알림이 무엇인지 구분할 수 있다(B8).
+        // 페어링 계열(pairing_*)이 아니면 앱은 "안전 알림" 채널로 표시한다.
+        val notifData = mapOf(
+            "event" to "fall_detected",
+            "log_id" to req.logId,
+            "user_id" to req.userId,
+            "score" to req.score.toString()
+        )
         if (req.fall || req.score > RiskLevel.DANGER_THRESHOLD) {
             notifySafe(
                 userId = req.userId,

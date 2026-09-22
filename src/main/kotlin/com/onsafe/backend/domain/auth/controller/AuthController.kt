@@ -1,7 +1,7 @@
 package com.onsafe.backend.domain.auth.controller
 
 import com.onsafe.backend.common.response.ApiResponse
-import com.onsafe.backend.common.util.clientIpAddress
+import com.onsafe.backend.common.util.ClientIpResolver
 import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.service.AuthService
 import io.swagger.v3.oas.annotations.Operation
@@ -14,7 +14,10 @@ import org.springframework.web.server.ServerWebExchange
 @Tag(name = "Auth", description = "인증 API")
 @RestController
 @RequestMapping("/api/auth")
-class AuthController(private val authService: AuthService) {
+class AuthController(
+    private val authService: AuthService,
+    private val clientIpResolver: ClientIpResolver
+) {
 
     @Operation(summary = "회원가입")
     @PostMapping("/register")
@@ -23,7 +26,7 @@ class AuthController(private val authService: AuthService) {
         @Valid @RequestBody request: RegisterRequest,
         exchange: ServerWebExchange
     ): ApiResponse<Unit> {
-        authService.register(request, exchange.clientIpAddress())
+        authService.register(request, clientIpResolver.resolve(exchange))
         return ApiResponse.ok(message = "회원가입이 완료되었습니다.")
     }
 
@@ -33,7 +36,7 @@ class AuthController(private val authService: AuthService) {
         @Valid @RequestBody request: LoginRequest,
         exchange: ServerWebExchange
     ): ApiResponse<LoginResponse> {
-        val ipAddress = exchange.clientIpAddress()
+        val ipAddress = clientIpResolver.resolve(exchange)
         val userAgent = exchange.request.headers.getFirst("User-Agent") ?: "unknown"
         val response = authService.login(request, ipAddress, userAgent)
         return ApiResponse.ok(response)
@@ -43,17 +46,22 @@ class AuthController(private val authService: AuthService) {
     @PostMapping("/logout")
     suspend fun logout(
         @RequestHeader(value = "Authorization", required = false) authorization: String?,
-        @RequestHeader(value = "Refresh-Token", required = false) refreshToken: String?
+        @RequestHeader(value = "Refresh-Token", required = false) refreshToken: String?,
+        // 선택 본문 — FCM 토큰을 함께 보내면 그 기기 토큰까지 한 번에 해제한다(B2).
+        @RequestBody(required = false) request: LogoutRequest?
     ): ApiResponse<Unit> {
         val accessToken = authorization?.removePrefix("Bearer ")
-        authService.logout(accessToken, refreshToken)
+        authService.logout(accessToken, refreshToken, request)
         return ApiResponse.ok(message = "로그아웃 완료")
     }
 
     @Operation(summary = "아이디 찾기")
     @PostMapping("/find-id")
-    suspend fun findId(@Valid @RequestBody request: FindIdRequest): ApiResponse<FindIdResponse> {
-        val response = authService.findId(request)
+    suspend fun findId(
+        @Valid @RequestBody request: FindIdRequest,
+        exchange: ServerWebExchange
+    ): ApiResponse<FindIdResponse> {
+        val response = authService.findId(request, clientIpResolver.resolve(exchange))
         return ApiResponse.ok(response)
     }
 
@@ -94,16 +102,22 @@ class AuthController(private val authService: AuthService) {
 
     @Operation(summary = "비밀번호 재설정 인증코드 발송")
     @PostMapping("/send-reset-code")
-    suspend fun sendResetCode(@Valid @RequestBody request: SendResetCodeRequest): ApiResponse<Unit> {
-        authService.sendResetCode(request)
-        return ApiResponse.ok(message = "인증코드가 발송되었습니다.")
+    suspend fun sendResetCode(
+        @Valid @RequestBody request: SendResetCodeRequest,
+        exchange: ServerWebExchange
+    ): ApiResponse<Unit> {
+        authService.sendResetCode(request, clientIpResolver.resolve(exchange))
+        // 아이디·메일이 맞지 않아도 같은 응답을 준다(C2). 문구도 발송을 단정하지 않는다.
+        return ApiResponse.ok(message = "입력한 정보가 일치하면 인증코드가 발송됩니다.")
     }
 
     @Operation(summary = "비밀번호 재설정 인증코드 확인")
     @PostMapping("/verify-reset-code")
-    suspend fun verifyResetCode(@Valid @RequestBody request: VerifyResetCodeRequest): ApiResponse<Unit> {
-        authService.verifyResetCode(request)
-        return ApiResponse.ok(message = "인증코드가 확인되었습니다.")
+    suspend fun verifyResetCode(
+        @Valid @RequestBody request: VerifyResetCodeRequest
+    ): ApiResponse<VerifyResetCodeResponse> {
+        val response = authService.verifyResetCode(request)
+        return ApiResponse.ok(response, "인증코드가 확인되었습니다.")
     }
 
     @Operation(summary = "토큰 재발급")

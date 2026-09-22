@@ -4,9 +4,11 @@ import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.Query
 import com.onsafe.backend.common.util.await
+import com.onsafe.backend.common.util.deleteInBatches
 import com.onsafe.backend.common.util.toLocalDateTime
 import com.onsafe.backend.common.util.toTimestamp
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
+import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
 import org.springframework.stereotype.Repository
 import java.time.LocalDateTime
 import java.util.UUID
@@ -29,9 +31,11 @@ class LoginHistoryRepository(private val firestore: Firestore) {
             .limit(limit)
             .get().await().documents.map { it.toLoginHistory() }
 
+    // 문서를 하나씩 지우면 건수만큼 왕복이 생긴다 — 배치(최대 500건)로 묶는다(D3).
+    // `deleteInBatches`는 guardian_links·fcm_tokens·consents가 이미 쓰는 공용 유틸이다.
     suspend fun deleteByUserId(userId: String): Long {
         val docs = col.whereEqualTo("user_id", userId).get().await().documents
-        docs.forEach { it.reference.delete().await() }
+        firestore.deleteInBatches(docs.map { it.reference })
         return docs.size.toLong()
     }
 
@@ -42,15 +46,18 @@ class LoginHistoryRepository(private val firestore: Firestore) {
         val docs = col.whereLessThan("timestamp", cutoff.toTimestamp())
             .limit(limit)
             .get().await().documents
-        docs.forEach { it.reference.delete().await() }
+        firestore.deleteInBatches(docs.map { it.reference })
         return docs.size
     }
 
     private fun DocumentSnapshot.toLoginHistory() = LoginHistory(
         historyId = id,
         userId = getString("user_id") ?: "",
-        ipAddress = getString("ip_address") ?: "",
-        userAgent = getString("user_agent") ?: "",
+        // event_type이 없는 기존 문서는 로그인 계열로 본다 — success 값으로 성공·실패를 가른다.
+        eventType = getString("event_type")?.let { runCatching { SecurityEventType.valueOf(it) }.getOrNull() }
+            ?: if (getBoolean("success") == true) SecurityEventType.LOGIN_SUCCESS else SecurityEventType.LOGIN_FAIL,
+        ipAddress = getString("ip_address"),
+        userAgent = getString("user_agent"),
         success = getBoolean("success") ?: false,
         failReason = getString("fail_reason"),
         timestamp = getTimestamp("timestamp")?.toLocalDateTime() ?: LocalDateTime.now()
@@ -58,6 +65,7 @@ class LoginHistoryRepository(private val firestore: Firestore) {
 
     private fun LoginHistory.toMap() = mapOf(
         "user_id" to userId,
+        "event_type" to eventType.name,
         "ip_address" to ipAddress,
         "user_agent" to userAgent,
         "success" to success,

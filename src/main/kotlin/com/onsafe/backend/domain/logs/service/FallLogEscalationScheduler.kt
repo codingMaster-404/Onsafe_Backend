@@ -59,7 +59,11 @@ class FallLogEscalationScheduler(
                     logId = claimed.logId,
                     score = claimed.score,
                     fall = claimed.fall,
-                    data = mapOf("log_id" to claimed.logId, "user_id" to claimed.userId)
+                    data = mapOf(
+                        "event" to "fall_escalated",
+                        "log_id" to claimed.logId,
+                        "user_id" to claimed.userId
+                    )
                 )
             }.onFailure { e ->
                 log.error("에스컬레이션 알림 전송 실패 log_id=${claimed.logId}: ${e.message}", e)
