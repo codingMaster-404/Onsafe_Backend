@@ -10,6 +10,7 @@ import com.google.firebase.messaging.Notification as FcmNotification
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.util.await
+import com.onsafe.backend.domain.camera.model.entity.RiskLevel
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.notification.model.dto.NotificationLogResponse
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
@@ -17,6 +18,7 @@ import com.onsafe.backend.domain.notification.model.dto.NotificationResponse
 import com.onsafe.backend.domain.notification.model.entity.Notification
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
+import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.entity.User
 import com.onsafe.backend.domain.user.repository.UserRepository
 import kotlinx.coroutines.async
@@ -37,7 +39,8 @@ class NotificationService(
     private val userRepository: UserRepository,
     private val notificationRepository: NotificationRepository,
     private val guardianLinkRepository: GuardianLinkRepository,
-    private val fcmTokenRepository: FcmTokenRepository
+    private val fcmTokenRepository: FcmTokenRepository,
+    private val settingsRepository: SettingsRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -63,6 +66,14 @@ class NotificationService(
                 fall = request.fall,
             )
         )
+
+        // 사용자가 설정에서 알림을 껐다면 FCM 발송만 건너뛴다 — 위 저장은 그대로 두어 알림함에서는
+        // 확인할 수 있게 한다. 단, 낙상·위험 수준 이벤트는 안전상 사용자 설정과 무관하게 강제 발송한다.
+        // 토큰 조회(findAll)보다 앞에 둬서, 발송하지 않을 사용자의 서브컬렉션 조회를 아낀다.
+        if (!isSafetyCritical(request) && !isNotificationEnabled(request.userId)) {
+            log.info("사용자 설정에 따라 FCM 발송 건너뜀 (userId: ${request.userId})")
+            return NotificationResponse(status = "ok", message = "사용자가 알림을 비활성화했습니다.", fcmMessageId = "")
+        }
 
         // 기기별 토큰 전부에 보낸다(B8). 예전에는 계정당 토큰 1개라 마지막에 앱을 켠 기기만 받았다.
         val tokens = runCatching { fcmTokenRepository.findAll(user.userId) }
@@ -125,6 +136,18 @@ class NotificationService(
             .setNotification(AndroidNotification.builder().setChannelId(channelId).build())
             .build()
     }
+
+    // fall=true 또는 위험 임계 초과 = 안전상 무시 못 하는 알림.
+    // 페어링·오프라인·주의 수준은 사용자 설정으로 억제 가능.
+    private fun isSafetyCritical(request: NotificationRequest): Boolean =
+        request.fall || (request.score != null && request.score > RiskLevel.DANGER_THRESHOLD)
+
+    // 설정 문서 없음(신규 유저) → 기본값 true(알림 ON). 조회 실패 시에도 안전한 fallback 으로
+    // true 를 반환해 조회 오류 하나로 알림이 전면 차단되는 상황을 막는다.
+    private suspend fun isNotificationEnabled(userId: String): Boolean =
+        runCatching { settingsRepository.findByUserId(userId)?.notificationEnabled }
+            .onFailure { e -> log.warn("사용자 설정 조회 실패 (userId: $userId), 기본값 true 사용: ${e.message}") }
+            .getOrNull() ?: true
 
     /** FCM 토큰 등록 — 같은 기기가 앱을 켤 때마다 호출되므로 deviceId 기준 upsert. */
     suspend fun registerFcmToken(userId: String, fcmToken: String, deviceId: String) {

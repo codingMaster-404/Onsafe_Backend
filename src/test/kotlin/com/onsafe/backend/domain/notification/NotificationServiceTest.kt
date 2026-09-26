@@ -16,6 +16,8 @@ import com.onsafe.backend.domain.notification.model.entity.FcmToken
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.notification.service.NotificationService
+import com.onsafe.backend.domain.settings.model.entity.UserSettings
+import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.entity.User
 import com.onsafe.backend.domain.user.repository.UserRepository
 import io.mockk.coEvery
@@ -38,6 +40,7 @@ class NotificationServiceTest {
     private val notificationRepository: NotificationRepository = mockk()
     private val guardianLinkRepository: GuardianLinkRepository = mockk()
     private val fcmTokenRepository: FcmTokenRepository = mockk(relaxUnitFun = true)
+    private val settingsRepository: SettingsRepository = mockk()
     private lateinit var notificationService: NotificationService
 
     private val baseUser = User(
@@ -53,8 +56,11 @@ class NotificationServiceTest {
     fun setUp() {
         // 알림 기록은 FCM 발송 성공/실패와 무관하게 항상 남으므로 기본 저장 스텁만 걸어둔다.
         coEvery { notificationRepository.save(any()) } answers { firstArg() }
+        // 알림 ON이 기본값이다. 설정을 끄는 케이스만 각 테스트에서 이 스텁을 덮어쓴다.
+        coEvery { settingsRepository.findByUserId(any()) } returns UserSettings("testUser")
         notificationService = NotificationService(
-            userRepository, notificationRepository, guardianLinkRepository, fcmTokenRepository
+            userRepository, notificationRepository, guardianLinkRepository, fcmTokenRepository,
+            settingsRepository
         )
         mockkStatic(FirebaseMessaging::class)
     }
@@ -216,5 +222,71 @@ class NotificationServiceTest {
         notificationService.unregisterFcmToken("testUser", "token-phone", "device1")
 
         coVerify(exactly = 1) { fcmTokenRepository.delete("testUser", "device1", "token-phone") }
+    }
+
+    // ── 사용자 알림 설정 존중 ─────────────────────────
+
+    @Test
+    fun `알림을 끄면 FCM은 건너뛰지만 알림 기록은 남긴다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { settingsRepository.findByUserId("testUser") } returns
+            UserSettings("testUser", notificationEnabled = false)
+
+        val result = notificationService.sendNotification(
+            NotificationRequest(userId = "testUser", title = "보호자 연결", body = "연결되었습니다")
+        )
+
+        assertEquals("ok", result.status)
+        assertEquals("사용자가 알림을 비활성화했습니다.", result.message)
+        assertEquals("", result.fcmMessageId)
+        // 알림함에서는 보여야 하므로 저장은 그대로 수행된다.
+        coVerify(exactly = 1) { notificationRepository.save(any()) }
+        // 발송하지 않을 사용자라 토큰 서브컴렉션 조회 자체를 건너뛴다.
+        coVerify(exactly = 0) { fcmTokenRepository.findAll(any()) }
+    }
+
+    @Test
+    fun `알림을 꺼도 낙상은 강제 발송한다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { settingsRepository.findByUserId("testUser") } returns
+            UserSettings("testUser", notificationEnabled = false)
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("phone")
+        stubMulticast(true)
+
+        val result = notificationService.sendNotification(
+            NotificationRequest(userId = "testUser", title = "낙상 경보", body = "낙상 감지", fall = true)
+        )
+
+        assertEquals("알림 전송 완료 (1/1)", result.message)
+    }
+
+    @Test
+    fun `알림을 꺼도 위험 임계를 넘기면 강제 발송한다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { settingsRepository.findByUserId("testUser") } returns
+            UserSettings("testUser", notificationEnabled = false)
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("phone")
+        stubMulticast(true)
+
+        val result = notificationService.sendNotification(
+            NotificationRequest(userId = "testUser", title = "위험", body = "위험 감지", score = 80f)
+        )
+
+        assertEquals("알림 전송 완료 (1/1)", result.message)
+    }
+
+    @Test
+    fun `설정 조회가 실패하면 기본값 true로 발송한다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { settingsRepository.findByUserId("testUser") } throws RuntimeException("firestore down")
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("phone")
+        stubMulticast(true)
+
+        val result = notificationService.sendNotification(
+            NotificationRequest(userId = "testUser", title = "보호자 연결", body = "연결되었습니다")
+        )
+
+        // 조회 오류 하나로 알림이 전면 차단되면 안 된다.
+        assertEquals("알림 전송 완료 (1/1)", result.message)
     }
 }
