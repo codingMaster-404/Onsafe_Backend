@@ -8,6 +8,22 @@ enum class ConsentType {
     SENSITIVE_INFO,
 }
 
+/**
+ * 약관 타입별 현재 시행 버전.
+ * [requiresReconsent]가 false인 개정(문구 정리 등 경미한 변경)은 재동의 목록에는 나오지만
+ * 서버 차단(access 토큰 `cr` 클레임) 대상이 아니다 — 개인정보 수집 항목·목적 확대처럼 별도 동의가
+ * 필요한 개정에만 true로 둔다(K4).
+ */
+data class ConsentPolicy(
+    val version: String,
+    val requiresReconsent: Boolean,
+)
+
 // 늘봄 약관 시행일자(https://jasmin527.github.io/onsafe_privacy_policy/) 기준 최초 버전.
-// 배치 위치·재동의 플로우는 별도 분석 참고 — 지금은 코드 상수로 시작한다.
-const val CURRENT_CONSENT_VERSION = "2026-01-01"
+// 약관을 개정하면 해당 타입의 version을 새 시행일로 올린다 — 이전 버전에 동의한 사용자는
+// 로그인·refresh 때 재동의 대상으로 계산된다(ConsentService.getPending).
+val CONSENT_POLICIES: Map<ConsentType, ConsentPolicy> = mapOf(
+    ConsentType.TERMS_OF_SERVICE to ConsentPolicy(version = "2026-01-01", requiresReconsent = true),
+    ConsentType.PRIVACY_POLICY to ConsentPolicy(version = "2026-01-01", requiresReconsent = true),
+    ConsentType.SENSITIVE_INFO to ConsentPolicy(version = "2026-01-01", requiresReconsent = true),
+)

@@ -34,16 +34,23 @@ class ConsentRepository(private val firestore: Firestore) {
     // 쓰지 않는다. 문서 ID는 자동 생성(append-only 이력이라 존재 체크 대상이 아님).
     fun buildCreateWrites(
         userId: String,
-        types: List<ConsentType>,
-        version: String,
+        versions: Map<ConsentType, String>,
         agreedAt: LocalDateTime
-    ): List<Pair<DocumentReference, Map<String, Any?>>> = types.map { type ->
+    ): List<Pair<DocumentReference, Map<String, Any?>>> = versions.map { (type, version) ->
         col.document() to mapOf(
             "user_id" to userId,
             "type" to type.name,
             "version" to version,
             "agreed_at" to agreedAt.toTimestamp(),
         )
+    }
+
+    // 가입 이후의 재동의 기록. 여러 약관을 한 번에 동의하므로 한 배치로 묶어 일부만 남지 않게 한다.
+    suspend fun appendAll(userId: String, versions: Map<ConsentType, String>, agreedAt: LocalDateTime) {
+        if (versions.isEmpty()) return
+        val batch = firestore.batch()
+        buildCreateWrites(userId, versions, agreedAt).forEach { (ref, data) -> batch.set(ref, data) }
+        batch.commit().await()
     }
 
     private fun DocumentSnapshot.toConsentRecord() = ConsentRecord(

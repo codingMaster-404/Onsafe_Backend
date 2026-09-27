@@ -65,5 +65,10 @@ enum class ErrorCode(
     PAIRING_NOT_FOUND(HttpStatus.NOT_FOUND, "연결된 보호자 관계를 찾을 수 없습니다."),
 
     // ── 알림 목록 ─────────────────────────────────────────
-    NOTIFICATION_NOT_FOUND(HttpStatus.NOT_FOUND, "알림을 찾을 수 없습니다.")
+    NOTIFICATION_NOT_FOUND(HttpStatus.NOT_FOUND, "알림을 찾을 수 없습니다."),
+
+    // ── 약관 동의 ─────────────────────────────────────────
+    // 토큰은 유효하므로 401이 아니라 403 — 401이면 앱이 refresh를 시도하고, 같은 클레임의 토큰을 다시 받는다.
+    CONSENT_REQUIRED(HttpStatus.FORBIDDEN, "개정된 필수 약관에 동의해야 서비스를 이용할 수 있습니다."),
+    CONSENT_VERSION_MISMATCH(HttpStatus.CONFLICT, "약관이 다시 개정되었습니다. 최신 약관을 확인한 뒤 다시 동의해주세요.")
 }

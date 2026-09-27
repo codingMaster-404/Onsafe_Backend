@@ -18,6 +18,8 @@ import javax.crypto.SecretKey
 
 private const val TYPE_CLAIM = "typ"
 private const val AUTH_TIME_CLAIM = "auth_time"
+// 개정 필수 약관 미동의(재동의 전 차단). 차단 대상일 때만 싣는다 — 없으면 false.
+private const val CONSENT_REQUIRED_CLAIM = "cr"
 private const val MIN_SECRET_BYTES = 32 // HS256 최소 키 길이 (256비트)
 
 // Access와 Refresh의 클레임 구조가 같으면 한쪽 토큰을 다른 쪽 자리에 넣어도 검증을 통과한다.
@@ -34,12 +36,16 @@ enum class TokenType(val claimValue: String) {
  * 검증과 조회를 나눠 두면 호출부가 같은 토큰을 2~5번 파싱한다(매번 HMAC 서명 검증 + JSON 파싱).
  */
 sealed interface TokenParseResult {
-    /** [authTime]은 refresh 토큰에만 있다. [remainingExpiry]는 exp가 없으면 0이다. */
+    /**
+     * [authTime]은 refresh 토큰에만 있다. [remainingExpiry]는 exp가 없으면 0이다.
+     * [consentRequired]는 access 토큰의 `cr` 클레임 — 재동의 전 보호 API 차단 여부다.
+     */
     data class Valid(
         val userId: String,
         val issuedAt: Instant,
         val authTime: Instant?,
-        val remainingExpiry: Duration
+        val remainingExpiry: Duration,
+        val consentRequired: Boolean = false
     ) : TokenParseResult
 
     data class Invalid(val errorCode: ErrorCode) : TokenParseResult
@@ -64,10 +70,14 @@ class JwtProvider(
     // access 토큰도 로그인 기준 절대 만료(auth_time + refresh 유효기간)를 넘지 않게 자른다.
     // 자르지 않으면 30일 직전에 재발급된 access가 최대 1시간 더 유효하다. auth_time은 만료 계산에만
     // 쓰고 클레임으로 넣지 않는다 — access로는 재발급하지 않으므로 이어받을 필요가 없다.
-    fun generateAccessToken(userId: String, authTime: Instant): String {
+    // consentRequired는 발급 시점의 재동의 필요 여부다(ConsentService.isBlocked). 클레임으로 싣는 이유는
+    // 필터가 요청마다 Firestore·Redis를 더 조회하지 않게 하려는 것 — 대신 동의 후에는 refresh로 새 토큰을
+    // 받아야 풀리고, 약관 개정 직후 이미 발급된 토큰은 만료(최대 1시간)까지 차단되지 않는다(D1).
+    fun generateAccessToken(userId: String, authTime: Instant, consentRequired: Boolean = false): String {
         val now = Date()
         val absoluteExpiry = authTime.epochSecond * 1000 + refreshTokenExpiry
         return baseBuilder(userId, TokenType.ACCESS, now)
+            .apply { if (consentRequired) claim(CONSENT_REQUIRED_CLAIM, true) }
             .expiration(Date(minOf(now.time + accessTokenExpiry, absoluteExpiry)))
             .compact()
     }
@@ -111,7 +121,8 @@ class JwtProvider(
             userId = claims.subject,
             issuedAt = claims.issuedAt.toInstant(), // 세션 무효화 판정 기준값(TokenRevocationStore). JWT iat는 초 단위다
             authTime = (claims[AUTH_TIME_CLAIM] as? Number)?.let { Instant.ofEpochSecond(it.toLong()) },
-            remainingExpiry = remainingOf(claims)
+            remainingExpiry = remainingOf(claims),
+            consentRequired = claims[CONSENT_REQUIRED_CLAIM] == true
         )
     }
 

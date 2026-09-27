@@ -12,9 +12,9 @@ import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
 import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
-import com.onsafe.backend.domain.consent.model.entity.CURRENT_CONSENT_VERSION
-import com.onsafe.backend.domain.consent.model.entity.ConsentType
+import com.onsafe.backend.domain.consent.model.entity.CONSENT_POLICIES
 import com.onsafe.backend.domain.consent.repository.ConsentRepository
+import com.onsafe.backend.domain.consent.service.ConsentService
 import com.onsafe.backend.domain.notification.service.NotificationService
 import com.onsafe.backend.domain.settings.model.entity.UserSettings
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
@@ -48,6 +48,7 @@ class AuthService(
     private val loginHistoryRepository: LoginHistoryRepository,
     private val settingsRepository: SettingsRepository,
     private val consentRepository: ConsentRepository,
+    private val consentService: ConsentService,
     private val rateLimiter: RateLimiter,
     private val verificationCodeGenerator: VerificationCodeGenerator,
     private val tokenRevocationStore: TokenRevocationStore,
@@ -265,8 +266,7 @@ class AuthService(
             additionalWrites = listOf(settingsRepository.buildCreateWrite(UserSettings(userId = request.userId))) +
                 consentRepository.buildCreateWrites(
                     userId = request.userId,
-                    types = listOf(ConsentType.TERMS_OF_SERVICE, ConsentType.PRIVACY_POLICY, ConsentType.SENSITIVE_INFO),
-                    version = CURRENT_CONSENT_VERSION,
+                    versions = CONSENT_POLICIES.mapValues { it.value.version },
                     agreedAt = now
                 )
         )
@@ -325,13 +325,18 @@ class AuthService(
         }
 
         recordSecurityEvent(user.userId, SecurityEventType.LOGIN_SUCCESS, ipAddress, userAgent)
-        val tokens = issueTokens(user.userId, authTime = Instant.now())
+        // 재동의 목록은 차단 스위치와 무관하게 내려 앱이 모달을 띄우게 하고, 차단(cr 클레임)은 스위치를 따른다.
+        val pendingConsents = consentService.getPending(user.userId)
+        val tokens = issueTokens(
+            user.userId, authTime = Instant.now(), consentRequired = consentService.isBlocking(pendingConsents)
+        )
         return LoginResponse(
             userId = user.userId,
             deviceId = request.deviceId,
             name = user.name,
             accessToken = tokens.accessToken,
-            refreshToken = tokens.refreshToken
+            refreshToken = tokens.refreshToken,
+            pendingConsents = pendingConsents
         )
     }
 
@@ -381,6 +386,9 @@ class AuthService(
         }
         // 무효화 키는 TTL(30일) 뒤 사라지므로, 탈퇴한 계정은 존재 여부로도 한 번 더 막는다.
         userRepository.findByUserId(userId) ?: throw BusinessException(ErrorCode.INVALID_TOKEN)
+        // 재동의 여부도 선점 전에 계산한다 — 조회 실패로 토큰이 소모되지 않게(아래 선점 주석과 같은 이유).
+        // 재동의 후 앱이 refresh하면 여기서 false가 돼 cr 없는 토큰이 나간다(D2).
+        val consentRequired = consentService.isBlocked(userId)
 
         // 조회 → 발급 → 블랙리스트 등록이 분리돼 있으면, 같은 refresh 토큰의 동시 요청이 둘 다 성공해
         // 세션이 갈라진다. 발급 직전에 블랙리스트 키를 SET NX로 선점해 선점한 요청 하나만 발급한다.
@@ -396,7 +404,7 @@ class AuthService(
         // 로그인 시각(auth_time)을 이어받아 새 토큰도 로그인 기준 30일에 만료되게 한다.
         // refresh 토큰은 검증에서 auth_time 존재를 보장하지만(JwtProvider.hasExpectedShape) 타입상 nullable이다.
         val authTime = parsed.authTime ?: throw BusinessException(ErrorCode.INVALID_TOKEN)
-        return issueTokens(userId, authTime)
+        return issueTokens(userId, authTime, consentRequired)
     }
 
     /**
@@ -445,8 +453,8 @@ class AuthService(
         recordSecurityEvent(user.userId, SecurityEventType.PASSWORD_RESET)
     }
 
-    private fun issueTokens(userId: String, authTime: Instant) = TokenResponse(
-        accessToken = jwtProvider.generateAccessToken(userId, authTime),
+    private fun issueTokens(userId: String, authTime: Instant, consentRequired: Boolean = false) = TokenResponse(
+        accessToken = jwtProvider.generateAccessToken(userId, authTime, consentRequired),
         refreshToken = jwtProvider.generateRefreshToken(userId, authTime)
     )
 

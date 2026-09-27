@@ -34,6 +34,12 @@ jwt:
 encryption:
   aes-key: ${ENCRYPTION_AES_KEY:}
 
+# 개정 필수 약관 미동의 시 보호 API 차단(K1·D3). 재동의 목록(pending_consents) 응답은 이 값과 무관하게 항상 나간다.
+# 프론트 재동의 모달 배포 전에는 false로 둔다 — true면 동의 기록이 없는 기존 사용자까지 전부 403 CONSENT_REQUIRED가 된다.
+# 켜고 끈 효과는 다음 로그인·refresh로 발급되는 access 토큰부터 적용된다(최대 1시간 지연).
+consent:
+  enforcement-enabled: ${CONSENT_ENFORCEMENT_ENABLED:false}
+
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
