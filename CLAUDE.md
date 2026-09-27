@@ -133,5 +133,4 @@ Storage.SignUrlOption.withV4Signature()
 ## 커밋 원칙
 
 - **git 커밋·푸시는 유저가 명시적으로 요청할 때만 진행한다.** 파일 수정 후 자동으로 커밋하지 않는다.
-- 테스트 파일(`src/test/**`)은 커밋에 포함하지 않는다. 유저가 명시한 경우만 예외.
 - `serviceAccountKey.json` 등 자격증명 파일은 절대 커밋하지 않는다.
