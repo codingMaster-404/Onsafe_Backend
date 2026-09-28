@@ -240,4 +240,14 @@ class JwtProviderTest {
         assertThrows<IllegalArgumentException> { JwtProvider("short-secret", accessExpiry, refreshExpiry) }
         assertThrows<IllegalArgumentException> { JwtProvider("", accessExpiry, refreshExpiry) }
     }
+
+    @Test
+    fun `재동의 필요로 발급한 access 토큰만 consentRequired가 true이고, 평소 토큰에는 cr 클레임이 없다`() {
+        val blocked = jwtProvider.generateAccessToken("testUser", Instant.now(), consentRequired = true)
+        val normal = jwtProvider.generateAccessToken("testUser", Instant.now())
+
+        assertTrue(validOf(blocked, TokenType.ACCESS).consentRequired)
+        assertFalse(validOf(normal, TokenType.ACCESS).consentRequired)
+        assertFalse(payloadJson(normal).contains("\"cr\""))
+    }
 }

@@ -174,4 +174,70 @@ class JwtAuthenticationFilterTest {
         assertTrue(chain.called)
         assertNull(exchange.response.statusCode)
     }
+
+    // ── 재동의 전 차단(cr 클레임, A5) ────────────────────────────
+
+    private fun requestWith(token: String, method: org.springframework.http.HttpMethod, path: String) =
+        MockServerWebExchange.from(
+            MockServerHttpRequest.method(method, path).header(HttpHeaders.AUTHORIZATION, "Bearer $token").build()
+        )
+
+    @Test
+    fun `재동의 필요 토큰은 일반 보호 API에서 403 CONSENT_REQUIRED`() {
+        val token = jwtProvider.generateAccessToken("testUser", Instant.now(), consentRequired = true)
+        stubRedis(token, blacklisted = null, validAfter = null)
+
+        val exchange = exchangeWith(token, path = "/api/fall-logs/testUser")
+        val chain = run(exchange)
+
+        assertFalse(chain.called)
+        assertEquals(HttpStatus.FORBIDDEN, exchange.response.statusCode)
+        assertTrue(exchange.response.bodyAsString.block()!!.contains("\"code\":\"CONSENT_REQUIRED\""))
+    }
+
+    @Test
+    fun `재동의 필요 토큰도 동의·탈퇴·재인증·FCM 정리 경로는 통과한다 (D4)`() {
+        val token = jwtProvider.generateAccessToken("testUser", Instant.now(), consentRequired = true)
+        stubRedis(token, blacklisted = null, validAfter = null)
+        val get = org.springframework.http.HttpMethod.GET
+        val post = org.springframework.http.HttpMethod.POST
+        val delete = org.springframework.http.HttpMethod.DELETE
+
+        listOf(
+            get to "/api/consents/testUser/pending",
+            post to "/api/consents/testUser",
+            post to "/api/users/testUser/verify-password",
+            delete to "/api/users/testUser",
+            delete to "/api/users/testUser/fcm-token",
+        ).forEach { (method, path) ->
+            val chain = RecordingChain()
+            filter.filter(requestWith(token, method, path), chain).block()
+            assertTrue(chain.called, "$method $path")
+        }
+    }
+
+    @Test
+    fun `재동의 필요 토큰으로 프로필 조회·수정은 막힌다 (탈퇴 DELETE만 허용)`() {
+        val token = jwtProvider.generateAccessToken("testUser", Instant.now(), consentRequired = true)
+        stubRedis(token, blacklisted = null, validAfter = null)
+
+        listOf(org.springframework.http.HttpMethod.GET, org.springframework.http.HttpMethod.PUT).forEach { method ->
+            val exchange = requestWith(token, method, "/api/users/testUser")
+            val chain = RecordingChain()
+            filter.filter(exchange, chain).block()
+            assertFalse(chain.called, "$method")
+            assertEquals(HttpStatus.FORBIDDEN, exchange.response.statusCode)
+        }
+    }
+
+    @Test
+    fun `재동의 필요 토큰이라도 무효화된 세션이면 403이 아니라 401`() {
+        val token = jwtProvider.generateAccessToken("testUser", Instant.now(), consentRequired = true)
+        stubRedis(token, blacklisted = "1", validAfter = null)
+
+        val exchange = exchangeWith(token, path = "/api/fall-logs/testUser")
+        run(exchange)
+
+        assertEquals(HttpStatus.UNAUTHORIZED, exchange.response.statusCode)
+    }
 }

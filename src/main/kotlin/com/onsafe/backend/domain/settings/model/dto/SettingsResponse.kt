@@ -20,15 +20,17 @@ data class NotificationSettingsResponse(
 
 data class RetentionSettingsResponse(val retentionDays: Int = 30)
 
+// 필드명은 API 스펙(`consented_at`)을 따른다 — 이전 이름 consentAt은 `consent_at`으로 직렬화돼
+// 스펙대로 구현한 앱이 동의 시각을 항상 null로 받았다(C3). withdrawn_at은 스펙 외 추가 필드다.
 data class MarketingConsentResponse(
     val consent: Boolean,
-    val consentAt: LocalDateTime?,
+    val consentedAt: LocalDateTime?,
     val withdrawnAt: LocalDateTime?,
 ) {
     companion object {
         fun from(u: User) = MarketingConsentResponse(
             consent = u.marketingConsent,
-            consentAt = u.marketingConsentAt,
+            consentedAt = u.marketingConsentAt,
             withdrawnAt = u.marketingConsentWithdrawnAt,
         )
     }

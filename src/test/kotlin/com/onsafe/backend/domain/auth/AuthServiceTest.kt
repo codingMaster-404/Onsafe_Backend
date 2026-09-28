@@ -15,6 +15,7 @@ import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.auth.service.AuthService
 import com.onsafe.backend.domain.auth.service.EmailService
 import com.onsafe.backend.domain.consent.repository.ConsentRepository
+import com.onsafe.backend.domain.consent.service.ConsentService
 import com.onsafe.backend.domain.notification.service.NotificationService
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.entity.User
@@ -52,6 +53,7 @@ class AuthServiceTest {
     private val loginHistoryRepository: LoginHistoryRepository = mockk()
     private val settingsRepository: SettingsRepository = mockk()
     private val consentRepository: ConsentRepository = mockk()
+    private val consentService: ConsentService = mockk()
     private val rateLimiter: RateLimiter = mockk()
     private val tokenRevocationStore: TokenRevocationStore = mockk()
     private val notificationService: NotificationService = mockk(relaxUnitFun = true)
@@ -72,9 +74,13 @@ class AuthServiceTest {
         coEvery { loginHistoryRepository.save(any()) } answers { firstArg<LoginHistory>() }
         // 레이트리밋은 기본 허용 — 리밋 초과 자체를 검증하는 테스트가 아니므로 항상 통과시켜 기존 케이스 로직에 집중한다.
         coEvery { rateLimiter.requireAllowed(any(), any(), any()) } just Runs
+        // 재동의 대상 없음이 기본 — 재동의 동작 자체는 ConsentServiceTest가 검증한다.
+        coEvery { consentService.getPending(any()) } returns emptyList()
+        every { consentService.isBlocking(any()) } returns false
+        coEvery { consentService.isBlocked(any()) } returns false
         authService = AuthService(
             userRepository, passwordEncoder, jwtProvider, emailService, redis,
-            loginHistoryRepository, settingsRepository, consentRepository, rateLimiter, VerificationCodeGenerator(),
+            loginHistoryRepository, settingsRepository, consentRepository, consentService, rateLimiter, VerificationCodeGenerator(),
             tokenRevocationStore,
             notificationService
         )

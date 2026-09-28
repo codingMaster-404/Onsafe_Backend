@@ -1,5 +1,10 @@
 package com.onsafe.backend.domain.settings
 
+import com.fasterxml.jackson.databind.PropertyNamingStrategies
+import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.onsafe.backend.domain.settings.model.dto.MarketingConsentResponse
 import com.onsafe.backend.domain.settings.model.dto.NotificationSettingsRequest
 import com.onsafe.backend.domain.settings.model.entity.UserSettings
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
@@ -110,5 +115,20 @@ class SettingsServiceTest {
         assertFalse(result.soundEnabled)
         assertTrue(result.notificationEnabled)
         assertTrue(result.vibrationEnabled)
+    }
+
+    @Test
+    fun `마케팅 동의 응답은 스펙대로 consented_at으로 직렬화된다 (C3)`() {
+        // 운영과 같은 전역 설정(spring.jackson.property-naming-strategy: SNAKE_CASE)을 재현한다.
+        val mapper = jacksonObjectMapper()
+            .registerModule(JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+            .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+        val json = mapper.writeValueAsString(
+            MarketingConsentResponse(consent = true, consentedAt = java.time.LocalDateTime.of(2026, 8, 5, 10, 0), withdrawnAt = null)
+        )
+
+        assertTrue(json.contains("\"consented_at\":\"2026-08-05T10:00:00\""), json)
+        assertFalse(json.contains("\"consent_at\""), json)
     }
 }

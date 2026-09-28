@@ -1,6 +1,8 @@
 package com.onsafe.backend.common.security
 
+import org.springframework.http.HttpMethod
 import org.springframework.http.server.reactive.ServerHttpRequest
+import org.springframework.web.util.pattern.PathPattern
 import org.springframework.web.util.pattern.PathPatternParser
 
 // SecurityConfig의 permitAll 목록과 JwtAuthenticationFilter의 스킵 대상을 단일 소스로 관리.
@@ -19,8 +21,24 @@ object SecurityPaths {
     private val parser = PathPatternParser()
     private val compiled = PUBLIC_PATTERNS.map { parser.parse(it) }
 
+    // 개정 약관 미동의(`cr` 클레임) 토큰으로도 호출할 수 있는 경로(D4). 동의하거나, 동의하지 않고
+    // 탈퇴하거나(재인증 포함), 로그아웃 시 FCM 토큰을 정리하는 경로만 연다. 메서드가 null이면 전부 허용.
+    private val CONSENT_EXEMPT: List<Pair<HttpMethod?, PathPattern>> = listOf(
+        null to "/api/consents/**",
+        HttpMethod.POST to "/api/users/{userId}/verify-password",
+        HttpMethod.DELETE to "/api/users/{userId}",
+        null to "/api/users/{userId}/fcm-token",
+    ).map { (method, pattern) -> method to parser.parse(pattern) }
+
     fun isPublic(request: ServerHttpRequest): Boolean {
         val path = request.path.pathWithinApplication()
         return compiled.any { it.matches(path) }
+    }
+
+    fun isConsentExempt(request: ServerHttpRequest): Boolean {
+        val path = request.path.pathWithinApplication()
+        return CONSENT_EXEMPT.any { (method, pattern) ->
+            (method == null || method == request.method) && pattern.matches(path)
+        }
     }
 }

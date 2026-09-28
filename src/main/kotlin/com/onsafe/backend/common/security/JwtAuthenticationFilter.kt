@@ -69,6 +69,11 @@ class JwtAuthenticationFilter(
                 // (AccessGuard 참고) Spring Security의 role/authority 기반 인가를 쓰지 않는다.
                 // authorities는 항상 비워두고, 리소스별 인가는 각 컨트롤러가 명시적으로 처리한다.
                 TokenStatus.VALID -> {
+                    // 개정 약관 미동의 토큰은 동의·탈퇴·FCM 정리 경로만 허용한다(A5). 무효 토큰 판정(401)
+                    // 뒤에 둬야 끊긴 세션이 403으로 보이지 않는다.
+                    if (parsed.consentRequired && !SecurityPaths.isConsentExempt(exchange.request)) {
+                        return@flatMap writeErrorResponse(exchange, ErrorCode.CONSENT_REQUIRED)
+                    }
                     val auth = UsernamePasswordAuthenticationToken(parsed.userId, null, emptyList())
                     chain.filter(exchange)
                         .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth))
