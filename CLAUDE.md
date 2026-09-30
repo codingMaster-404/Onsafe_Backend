@@ -2,13 +2,12 @@
 
 ## 프로젝트 개요
 Spring WebFlux + Kotlin 코루틴 기반 리액티브 백엔드.
-Firebase(Firestore, FCM, GCS), AWS SES, Redis, JWT를 외부 서비스로 사용한다.
+Firebase(Firestore, FCM, GCS), Redis, JWT를 외부 서비스로 사용한다.
 
 ## 기술 스택
 - Spring Boot 3.4.4 / Spring WebFlux
 - Kotlin 2.1.20 / 코루틴
 - Firebase Admin SDK 9.3.0
-- AWS SDK for Java v2 (BOM 2.25.0)
 - jjwt 0.12.6
 - Redis (Reactive)
 
@@ -16,12 +15,15 @@ Firebase(Firestore, FCM, GCS), AWS SES, Redis, JWT를 외부 서비스로 사용
 
 ## AWS SDK 원칙
 
+> **현재 AWS 의존성 없음** — 메일 인증(AWS SES)을 2026-09에 제거했다. 아래는 AWS 서비스를 새로 추가할 때의 가이드다.
+
 **SDK 패키지 버전과 서비스 API 버전은 별개다.**
 
 `software.amazon.awssdk` 패키지(SDK v2) 안에도 v1/v2 API 모듈이 공존한다.
 신규 AWS 서비스 추가 시 반드시 최신 API 버전 모듈을 선택한다.
 
 ```
+# 예시 (SES — 제거 전 이 프로젝트가 쓰던 모듈)
 ❌  software.amazon.awssdk:ses      (SES v1 API — 기능 추가 중단)
 ✅  software.amazon.awssdk:sesv2   (SES v2 API — 현재 표준)
 ```
@@ -33,7 +35,7 @@ Firebase(Firestore, FCM, GCS), AWS SES, Redis, JWT를 외부 서비스로 사용
 
 **버전 관리**
 - BOM(`software.amazon.awssdk:bom`)을 통해 의존성 버전을 일괄 관리한다.
-- BOM 버전은 분기마다 최신으로 업데이트한다 (현재: 2.25.0).
+- 도입 시 최신 BOM으로 시작하고, 이후 분기마다 최신으로 업데이트한다.
 
 ---
 
@@ -92,7 +94,7 @@ Storage.SignUrlOption.withV4Signature()
 
 - 모든 서비스 메서드는 `suspend fun`으로 작성한다.
 - Mono/Flux를 서비스 레이어에서 직접 반환하지 않는다.
-- Java `CompletableFuture` → 코루틴 전환: `kotlinx-coroutines-jdk8`의 `.await()` 사용
+- Java `CompletableFuture` → 코루틴 전환: `kotlinx.coroutines.future.await()` 사용 (코루틴 1.7부터 `kotlinx-coroutines-core`에 포함 — 별도 `-jdk8` 의존성 불필요)
 - Firebase SDK 비동기 → 코루틴 전환: `common/util/FirestoreExt.kt`의 `.await()` 확장함수 사용
 
 ---
@@ -100,15 +102,23 @@ Storage.SignUrlOption.withV4Signature()
 ## 예외 처리 원칙
 
 - 외부 SDK 예외는 서비스 레이어에서 반드시 `BusinessException(ErrorCode.XXX)`로 래핑한다.
-- SDK별 예외를 구분해서 catch한다:
+- 클라이언트 처리가 달라지는 예외는 구분해서 catch하고, 원인 예외(`e`)를 함께 넘긴다:
 
 ```kotlin
-} catch (e: SdkClientException) {   // 네트워크/연결 실패
-    throw BusinessException(ErrorCode.MAIL_SEND_FAILED)
-} catch (e: SesV2Exception) {       // SES 발송 거부
-    throw BusinessException(ErrorCode.MAIL_SEND_FAILED)
+// JwtProvider.parse — 만료는 refresh로 해결되고 그 외는 재로그인이 필요해 코드를 나눈다
+} catch (e: ExpiredJwtException) {
+    TokenParseResult.Invalid(ErrorCode.EXPIRED_TOKEN)
+} catch (e: Exception) {
+    TokenParseResult.Invalid(ErrorCode.INVALID_TOKEN)
+}
+
+// NotificationService — FCM 발송 실패
+} catch (e: Exception) {
+    throw BusinessException(ErrorCode.FCM_SEND_FAILED, e)
 }
 ```
+
+- Redis 호출은 `common/util/RedisExt.kt`의 `log.guardRedis("상황") { … }`로 감싼다 — `REDIS_UNAVAILABLE`로 래핑하고 `CancellationException`은 그대로 다시 던진다.
 
 - 컨트롤러까지 SDK 예외가 전파되어서는 안 된다.
 

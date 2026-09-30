@@ -7,8 +7,6 @@ source "$(dirname "$0")/00_env.sh"
 SECRETS=(
   JWT_SECRET
   ENCRYPTION_AES_KEY
-  AWS_ACCESS_KEY_ID
-  AWS_SECRET_ACCESS_KEY
 )
 
 for name in "${SECRETS[@]}"; do
@@ -33,6 +31,4 @@ cat <<'EOF'
 >> 값 등록 예시 (개별 실행 — 값은 절대 git에 커밋 금지):
    # openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add JWT_SECRET --data-file=-
    # openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add ENCRYPTION_AES_KEY --data-file=-
-   # printf 'AKIA...' | gcloud secrets versions add AWS_ACCESS_KEY_ID --data-file=-
-   # printf 'xxxxxx' | gcloud secrets versions add AWS_SECRET_ACCESS_KEY --data-file=-
 EOF

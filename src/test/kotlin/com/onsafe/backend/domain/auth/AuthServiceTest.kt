@@ -7,19 +7,18 @@ import com.onsafe.backend.common.security.JwtProvider
 import com.onsafe.backend.common.security.TokenParseResult
 import com.onsafe.backend.common.security.TokenRevocationStore
 import com.onsafe.backend.common.security.TokenType
-import com.onsafe.backend.common.security.VerificationCodeGenerator
 import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
 import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
 import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.auth.service.AuthService
-import com.onsafe.backend.domain.auth.service.EmailService
 import com.onsafe.backend.domain.consent.repository.ConsentRepository
 import com.onsafe.backend.domain.consent.service.ConsentService
 import com.onsafe.backend.domain.notification.service.NotificationService
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.entity.User
 import com.onsafe.backend.domain.user.repository.UserRepository
+import com.google.cloud.firestore.DocumentReference
 import io.mockk.Runs
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -47,7 +46,6 @@ class AuthServiceTest {
     private val userRepository: UserRepository = mockk()
     private val passwordEncoder: PasswordEncoder = mockk()
     private val jwtProvider: JwtProvider = mockk()
-    private val emailService: EmailService = mockk()
     private val redis: ReactiveStringRedisTemplate = mockk()
     private val valueOps: ReactiveValueOperations<String, String> = mockk()
     private val loginHistoryRepository: LoginHistoryRepository = mockk()
@@ -79,8 +77,8 @@ class AuthServiceTest {
         every { consentService.isBlocking(any()) } returns false
         coEvery { consentService.isBlocked(any()) } returns false
         authService = AuthService(
-            userRepository, passwordEncoder, jwtProvider, emailService, redis,
-            loginHistoryRepository, settingsRepository, consentRepository, consentService, rateLimiter, VerificationCodeGenerator(),
+            userRepository, passwordEncoder, jwtProvider, redis,
+            loginHistoryRepository, settingsRepository, consentRepository, consentService, rateLimiter,
             tokenRevocationStore,
             notificationService
         )
@@ -138,7 +136,7 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "a@b.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "a@b.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
                 "127.0.0.1"
             )
         }.exceptionOrNull()
@@ -154,7 +152,7 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
                 "127.0.0.1"
             )
         }.exceptionOrNull()
@@ -171,7 +169,7 @@ class AuthServiceTest {
 
         val thrown = runCatching {
             authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
+                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
                 "127.0.0.1"
             )
         }.exceptionOrNull()
@@ -181,63 +179,33 @@ class AuthServiceTest {
     }
 
     @Test
-    fun `회원가입 - 이메일 인증을 완료하지 않았으면 EMAIL_NOT_VERIFIED 예외 발생`() = runTest {
+    fun `회원가입 - 메일 인증 티켓 없이 가입되고 Redis 티켓을 찾지 않는다 (B1)`() = runTest {
         coEvery { userRepository.existsByUserId("testUser") } returns false
         coEvery { userRepository.existsByMail("test@example.com") } returns false
         coEvery { userRepository.existsByPhone("010-1234-5678") } returns false
-        every { valueOps.getAndDelete("verify_ticket:test-ticket") } returns Mono.empty()
+        every { passwordEncoder.encode("pass1234") } returns "encoded"
+        every { settingsRepository.buildCreateWrite(any()) } returns (mockk<DocumentReference>() to emptyMap())
+        every { consentRepository.buildCreateWrites(any(), any(), any()) } returns emptyList()
+        coEvery { userRepository.createIfNotExists(any(), any()) } returns true
 
-        val thrown = runCatching {
-            authService.register(
-                RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true, emailVerifyTicket = "test-ticket"),
-                "127.0.0.1"
-            )
-        }.exceptionOrNull()
+        authService.register(
+            RegisterRequest(userId = "testUser", password = "pass1234", name = "홍길동", mail = "test@example.com", phone = "010-1234-5678", termsAgreed = true, privacyPolicyAgreed = true, sensitiveInfoAgreed = true),
+            "127.0.0.1"
+        )
 
-        assertTrue(thrown is BusinessException)
-        assertEquals(ErrorCode.EMAIL_NOT_VERIFIED, (thrown as BusinessException).errorCode)
+        coVerify(exactly = 1) { userRepository.createIfNotExists(match { it.mail == "test@example.com" }, any()) }
+        // 메일 소유 확인(SES)을 없앴으므로 verify_ticket을 소비하지 않는다.
+        verify(exactly = 0) { valueOps.getAndDelete(any()) }
     }
 
     // ── 아이디 찾기 ───────────────────────────────────────────────
 
-    // 티켓이 유효한 상태를 만든다 — 이제 티켓 없이는 아이디 찾기 자체가 동작하지 않는다(C1).
-    private fun stubFindIdTicket(ticket: String, mail: String?) {
-        every { valueOps.getAndDelete("verify_ticket:$ticket") } returns
-            if (mail == null) Mono.empty() else Mono.just(mail)
-    }
-
-    @Test
-    fun `아이디 찾기 - 이메일 인증 티켓이 없으면 EMAIL_NOT_VERIFIED (C1)`() = runTest {
-        coEvery { userRepository.findByMail("test@example.com") } returns baseUser
-        stubFindIdTicket("gone", null)
-
-        val thrown = runCatching {
-            authService.findId(FindIdRequest(name = "홍길동", mail = "test@example.com", emailVerifyTicket = "gone"), "127.0.0.1")
-        }.exceptionOrNull()
-
-        assertTrue(thrown is BusinessException)
-        assertEquals(ErrorCode.EMAIL_NOT_VERIFIED, (thrown as BusinessException).errorCode)
-    }
-
-    @Test
-    fun `아이디 찾기 - 티켓의 메일과 요청 메일이 다르면 EMAIL_NOT_VERIFIED (C1)`() = runTest {
-        coEvery { userRepository.findByMail("test@example.com") } returns baseUser
-        stubFindIdTicket("other", "someone@example.com")
-
-        val thrown = runCatching {
-            authService.findId(FindIdRequest(name = "홍길동", mail = "test@example.com", emailVerifyTicket = "other"), "127.0.0.1")
-        }.exceptionOrNull()
-
-        assertEquals(ErrorCode.EMAIL_NOT_VERIFIED, (thrown as BusinessException).errorCode)
-    }
-
     @Test
     fun `아이디 찾기 - 이메일 미존재 시 USER_NOT_FOUND 예외 발생`() = runTest {
         coEvery { userRepository.findByMail("notexist@example.com") } returns null
-        stubFindIdTicket("t1", "notexist@example.com")
 
         val thrown = runCatching {
-            authService.findId(FindIdRequest(name = "홍길동", mail = "notexist@example.com", emailVerifyTicket = "t1"), "127.0.0.1")
+            authService.findId(FindIdRequest(name = "홍길동", mail = "notexist@example.com"), "127.0.0.1")
         }.exceptionOrNull()
 
         assertTrue(thrown is BusinessException)
@@ -247,10 +215,9 @@ class AuthServiceTest {
     @Test
     fun `아이디 찾기 - 이름 불일치 시 USER_NOT_FOUND 예외 발생 (이메일 존재 여부 노출 차단)`() = runTest {
         coEvery { userRepository.findByMail("test@example.com") } returns baseUser
-        stubFindIdTicket("t2", "test@example.com")
 
         val thrown = runCatching {
-            authService.findId(FindIdRequest(name = "다른이름", mail = "test@example.com", emailVerifyTicket = "t2"), "127.0.0.1")
+            authService.findId(FindIdRequest(name = "다른이름", mail = "test@example.com"), "127.0.0.1")
         }.exceptionOrNull()
 
         assertTrue(thrown is BusinessException)
@@ -258,132 +225,52 @@ class AuthServiceTest {
     }
 
     @Test
-    fun `아이디 찾기 - 티켓과 정보가 맞으면 마스킹된 아이디를 돌려준다 (C1)`() = runTest {
+    fun `아이디 찾기 - 이름·메일이 맞으면 인증 티켓 없이 마스킹된 아이디를 돌려준다 (B2·E8)`() = runTest {
         coEvery { userRepository.findByMail("test@example.com") } returns baseUser
-        stubFindIdTicket("t3", "test@example.com")
 
-        val response = authService.findId(
-            FindIdRequest(name = "홍길동", mail = "test@example.com", emailVerifyTicket = "t3"), "127.0.0.1"
-        )
+        val response = authService.findId(FindIdRequest(name = "홍길동", mail = "test@example.com"), "127.0.0.1")
 
         assertEquals("tes*****", response.userId)
-        // IP 기준 rate limit도 거친다 — 티켓을 반복 발급받아 돌리는 시도를 막는다.
+        verify(exactly = 0) { valueOps.getAndDelete(any()) }
+    }
+
+    @Test
+    fun `아이디 찾기 - 이름 앞뒤 공백은 무시한다 (E4)`() = runTest {
+        coEvery { userRepository.findByMail("Test@Example.com") } returns baseUser
+
+        val response = authService.findId(FindIdRequest(name = " 홍길동 ", mail = "Test@Example.com"), "127.0.0.1")
+
+        assertEquals("tes*****", response.userId)
+    }
+
+    @Test
+    fun `아이디 찾기 - IP 10회와 정규화된 메일 5회 시간당 제한을 모두 확인한다 (E3)`() = runTest {
+        coEvery { userRepository.findByMail(any()) } returns baseUser
+
+        authService.findId(FindIdRequest(name = "홍길동", mail = " Test@Example.com "), "127.0.0.1")
+
         coVerify { rateLimiter.requireAllowed("rl:find-id:ip:127.0.0.1", 10, 3600) }
-    }
-
-    // ── 비밀번호 재설정 코드 발송 ──────────────────────────────────
-
-    @Test
-    fun `비밀번호 재설정 코드 발송 - 존재하지 않는 아이디여도 같은 성공 응답, 메일은 보내지 않는다 (C2)`() = runTest {
-        coEvery { userRepository.findByUserId("unknown") } returns null
-
-        authService.sendResetCode(SendResetCodeRequest(userId = "unknown", mail = "test@example.com"), "127.0.0.1")
-
-        // 응답으로 가입 여부를 알 수 없어야 한다 — 예외를 던지지 않고, 메일도 나가지 않는다.
-        coVerify(exactly = 0) { emailService.sendResetCode(any(), any()) }
-        verify(exactly = 0) { valueOps.set("reset_code:unknown", any(), any<Duration>()) }
+        // 대소문자·공백만 바꾼 같은 메일이 한도를 나눠 쓰지 못하게 키를 정규화한다.
+        coVerify { rateLimiter.requireAllowed("rl:find-id:mail:test@example.com", 5, 3600) }
     }
 
     @Test
-    fun `비밀번호 재설정 코드 발송 - 이메일 불일치여도 같은 성공 응답, 메일은 보내지 않는다 (C2)`() = runTest {
-        coEvery { userRepository.findByUserId("testUser") } returns baseUser
-
-        authService.sendResetCode(SendResetCodeRequest(userId = "testUser", mail = "wrong@example.com"), "127.0.0.1")
-
-        coVerify(exactly = 0) { emailService.sendResetCode(any(), any()) }
-        verify(exactly = 0) { valueOps.set("reset_code:testUser", any(), any<Duration>()) }
-    }
-
-    @Test
-    fun `비밀번호 재설정 코드 발송 - 아이디·메일이 맞으면 코드를 저장하고 메일을 보낸다`() = runTest {
-        coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        // 코드 생성기는 실제 구현을 쓰므로(setUp) 값 자체는 고정하지 않는다.
-        every { valueOps.set(eq("reset_code:testUser"), any(), Duration.ofSeconds(180)) } returns Mono.just(true)
-        coEvery { emailService.sendResetCode(eq("test@example.com"), any()) } just Runs
-
-        authService.sendResetCode(SendResetCodeRequest(userId = "testUser", mail = "test@example.com"), "127.0.0.1")
-
-        coVerify(exactly = 1) { emailService.sendResetCode(eq("test@example.com"), any()) }
-    }
-
-    @Test
-    fun `비밀번호 재설정 코드 발송 - IP 기준 rate limit도 확인한다 (C2)`() = runTest {
-        coEvery { userRepository.findByUserId("unknown") } returns null
-
-        authService.sendResetCode(SendResetCodeRequest(userId = "unknown", mail = "test@example.com"), "1.2.3.4")
-
-        coVerify { rateLimiter.requireAllowed("rl:send-reset:ip:1.2.3.4", 10, 3600) }
-    }
-
-    // ── 이메일 인증코드 검증 ──────────────────────────────────────
-
-    @Test
-    fun `이메일 인증코드 검증 - Redis에 코드 없으면 INVALID_EMAIL_CODE 예외 발생`() = runTest {
-        every { valueOps.get("email_verify:test@example.com") } returns Mono.empty()
+    fun `아이디 찾기 - 메일 기준 제한에 걸리면 조회 없이 TOO_MANY_REQUESTS (E3)`() = runTest {
+        coEvery { rateLimiter.requireAllowed("rl:find-id:mail:test@example.com", any(), any()) } throws
+            BusinessException(ErrorCode.TOO_MANY_REQUESTS)
 
         val thrown = runCatching {
-            authService.verifyEmailCode(VerifyEmailCodeRequest(mail = "test@example.com", code = "123456"))
+            authService.findId(FindIdRequest(name = "홍길동", mail = "test@example.com"), "127.0.0.1")
         }.exceptionOrNull()
 
-        assertTrue(thrown is BusinessException)
-        assertEquals(ErrorCode.INVALID_EMAIL_CODE, (thrown as BusinessException).errorCode)
-    }
-
-    @Test
-    fun `이메일 인증코드 검증 - 코드 불일치 시 INVALID_EMAIL_CODE 예외 발생`() = runTest {
-        every { valueOps.get("email_verify:test@example.com") } returns Mono.just("999999")
-
-        val thrown = runCatching {
-            authService.verifyEmailCode(VerifyEmailCodeRequest(mail = "test@example.com", code = "123456"))
-        }.exceptionOrNull()
-
-        assertTrue(thrown is BusinessException)
-        assertEquals(ErrorCode.INVALID_EMAIL_CODE, (thrown as BusinessException).errorCode)
-    }
-
-    // ── 비밀번호 재설정 인증코드 검증 ────────────────────────────
-
-    @Test
-    fun `비밀번호 재설정 인증코드 검증 - Redis에 코드 없으면 INVALID_RESET_CODE 예외 발생`() = runTest {
-        every { valueOps.get("reset_code:testUser") } returns Mono.empty()
-
-        val thrown = runCatching {
-            authService.verifyResetCode(VerifyResetCodeRequest(userId = "testUser", code = "123456"))
-        }.exceptionOrNull()
-
-        assertTrue(thrown is BusinessException)
-        assertEquals(ErrorCode.INVALID_RESET_CODE, (thrown as BusinessException).errorCode)
-    }
-
-    @Test
-    fun `비밀번호 재설정 인증코드 검증 - 코드 불일치 시 INVALID_RESET_CODE 예외 발생`() = runTest {
-        every { valueOps.get("reset_code:testUser") } returns Mono.just("999999")
-
-        val thrown = runCatching {
-            authService.verifyResetCode(VerifyResetCodeRequest(userId = "testUser", code = "123456"))
-        }.exceptionOrNull()
-
-        assertTrue(thrown is BusinessException)
-        assertEquals(ErrorCode.INVALID_RESET_CODE, (thrown as BusinessException).errorCode)
-    }
-
-    @Test
-    fun `비밀번호 재설정 인증코드 검증 - 성공 시 티켓을 발급하고 코드 키를 지운다 (A3)`() = runTest {
-        every { valueOps.get("reset_code:testUser") } returns Mono.just("123456")
-        every { redis.delete("reset_code:testUser") } returns Mono.just(1L)
-        every { valueOps.set(match { it.startsWith("reset_ticket:") }, "testUser", Duration.ofSeconds(600)) } returns Mono.just(true)
-
-        val response = authService.verifyResetCode(VerifyResetCodeRequest(userId = "testUser", code = "123456"))
-
-        // 티켓에는 userId가 담긴다 — resetPassword가 요청의 userId와 대조한다.
-        assertTrue(response.resetTicket.isNotBlank())
-        verify { valueOps.set("reset_ticket:${response.resetTicket}", "testUser", Duration.ofSeconds(600)) }
+        assertEquals(ErrorCode.TOO_MANY_REQUESTS, (thrown as BusinessException).errorCode)
+        coVerify(exactly = 0) { userRepository.findByMail(any()) }
     }
 
     // ── 비밀번호 재설정 ───────────────────────────────────────────
 
     @Test
-    fun `비밀번호 재설정 - 티켓이 없거나 이미 쓰였으면 INVALID_RESET_CODE (A3)`() = runTest {
+    fun `비밀번호 재설정 - 티켓이 없거나 이미 쓰였으면 INVALID_RESET_TICKET (A3)`() = runTest {
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
         every { valueOps.getAndDelete("reset_ticket:gone") } returns Mono.empty()
 
@@ -392,12 +279,12 @@ class AuthServiceTest {
         }.exceptionOrNull()
 
         assertTrue(thrown is BusinessException)
-        assertEquals(ErrorCode.INVALID_RESET_CODE, (thrown as BusinessException).errorCode)
+        assertEquals(ErrorCode.INVALID_RESET_TICKET, (thrown as BusinessException).errorCode)
         coVerify(exactly = 0) { userRepository.save(any()) }
     }
 
     @Test
-    fun `비밀번호 재설정 - 티켓의 userId와 요청 userId가 다르면 INVALID_RESET_CODE (A3)`() = runTest {
+    fun `비밀번호 재설정 - 티켓의 userId와 요청 userId가 다르면 INVALID_RESET_TICKET (A3)`() = runTest {
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
         every { valueOps.getAndDelete("reset_ticket:other") } returns Mono.just("otherUser")
 
@@ -405,19 +292,19 @@ class AuthServiceTest {
             authService.resetPassword(ResetPasswordRequest(userId = "testUser", resetTicket = "other", newPassword = "newPass1234"))
         }.exceptionOrNull()
 
-        assertEquals(ErrorCode.INVALID_RESET_CODE, (thrown as BusinessException).errorCode)
+        assertEquals(ErrorCode.INVALID_RESET_TICKET, (thrown as BusinessException).errorCode)
         coVerify(exactly = 0) { userRepository.save(any()) }
     }
 
     @Test
-    fun `비밀번호 재설정 - 없는 사용자도 USER_NOT_FOUND가 아니라 INVALID_RESET_CODE (C2 통로 차단)`() = runTest {
+    fun `비밀번호 재설정 - 없는 사용자도 USER_NOT_FOUND가 아니라 INVALID_RESET_TICKET (C2 통로 차단)`() = runTest {
         coEvery { userRepository.findByUserId("unknown") } returns null
 
         val thrown = runCatching {
             authService.resetPassword(ResetPasswordRequest(userId = "unknown", resetTicket = "any", newPassword = "newPass1234"))
         }.exceptionOrNull()
 
-        assertEquals(ErrorCode.INVALID_RESET_CODE, (thrown as BusinessException).errorCode)
+        assertEquals(ErrorCode.INVALID_RESET_TICKET, (thrown as BusinessException).errorCode)
         // 티켓을 소비하지도 않는다 — 존재 여부를 알아내려는 요청으로 남의 티켓을 태울 수 없다.
         verify(exactly = 0) { valueOps.getAndDelete(any()) }
     }
@@ -439,6 +326,94 @@ class AuthServiceTest {
             userRepository.save(match { it.password == "encoded_new" })
         }
         verify(exactly = 1) { valueOps.getAndDelete("reset_ticket:ticket-1") }
+    }
+
+    // ── 비밀번호 재설정 본인확인 (A안) ──────────────────────────────
+
+    private suspend fun resetIdentityFailure(request: VerifyResetIdentityRequest): BusinessException? =
+        runCatching { authService.verifyResetIdentity(request, "1.2.3.4", "agent") }.exceptionOrNull() as? BusinessException
+
+    @Test
+    fun `본인확인 - 세 값이 맞으면 userId를 담은 재설정 티켓을 10분 TTL로 발급한다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        val key = slot<String>()
+        every { valueOps.set(capture(key), "testUser", Duration.ofSeconds(600)) } returns Mono.just(true)
+
+        val response = authService.verifyResetIdentity(
+            VerifyResetIdentityRequest(userId = "testUser", name = "홍길동", mail = "test@example.com"), "1.2.3.4", "agent"
+        )
+
+        assertEquals("reset_ticket:${response.resetTicket}", key.captured)
+    }
+
+    @Test
+    fun `본인확인 - 이름 앞뒤 공백과 메일 대소문자는 무시한다 (E4)`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        every { valueOps.set(any(), "testUser", any<Duration>()) } returns Mono.just(true)
+
+        val response = authService.verifyResetIdentity(
+            VerifyResetIdentityRequest(userId = "testUser", name = " 홍길동 ", mail = " Test@Example.COM "), "1.2.3.4", "agent"
+        )
+
+        assertTrue(response.resetTicket.isNotBlank())
+    }
+
+    @Test
+    fun `본인확인 - 없는 아이디·이름 불일치·메일 불일치는 모두 RESET_IDENTITY_MISMATCH이고 티켓을 만들지 않는다 (E5)`() = runTest {
+        coEvery { userRepository.findByUserId("unknown") } returns null
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+
+        val cases = listOf(
+            VerifyResetIdentityRequest(userId = "unknown", name = "홍길동", mail = "test@example.com"),
+            VerifyResetIdentityRequest(userId = "testUser", name = "김철수", mail = "test@example.com"),
+            VerifyResetIdentityRequest(userId = "testUser", name = "홍길동", mail = "other@example.com"),
+        )
+
+        // 사유별로 다른 코드를 주면 응답만으로 가입 여부·메일 일치 여부가 드러난다.
+        cases.forEach { assertEquals(ErrorCode.RESET_IDENTITY_MISMATCH, resetIdentityFailure(it)?.errorCode) }
+        verify(exactly = 0) { valueOps.set(any(), any(), any<Duration>()) }
+    }
+
+    @Test
+    fun `본인확인 - IP 10회·userId 5회 시간당 제한을 모두 확인한다 (E3)`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        every { valueOps.set(any(), any(), any<Duration>()) } returns Mono.just(true)
+
+        authService.verifyResetIdentity(
+            VerifyResetIdentityRequest(userId = "testUser", name = "홍길동", mail = "test@example.com"), "1.2.3.4", "agent"
+        )
+
+        coVerify { rateLimiter.requireAllowed("rl:reset-identity:ip:1.2.3.4", 10, 3600) }
+        coVerify { rateLimiter.requireAllowed("rl:reset-identity:uid:testUser", 5, 3600) }
+    }
+
+    @Test
+    fun `보안 이벤트 - 본인확인 실패는 실제 사유와 함께 PASSWORD_RESET_IDENTITY_FAIL로 기록된다 (E6)`() = runTest {
+        val events = captureEvents()
+        coEvery { userRepository.findByUserId("unknown") } returns null
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+
+        resetIdentityFailure(VerifyResetIdentityRequest(userId = "unknown", name = "홍길동", mail = "test@example.com"))
+        resetIdentityFailure(VerifyResetIdentityRequest(userId = "testUser", name = "김철수", mail = "test@example.com"))
+
+        // 응답은 하나로 묶지만 기록에는 사유를 구분해 남긴다.
+        assertEquals(listOf(SecurityEventType.PASSWORD_RESET_IDENTITY_FAIL, SecurityEventType.PASSWORD_RESET_IDENTITY_FAIL), events.map { it.eventType })
+        assertEquals(listOf(ErrorCode.USER_NOT_FOUND.name, ErrorCode.RESET_IDENTITY_MISMATCH.name), events.map { it.failReason })
+        assertTrue(events.all { !it.success && it.ipAddress == "1.2.3.4" })
+    }
+
+    @Test
+    fun `보안 이벤트 - 본인확인 rate limit 차단도 기록되고 예외는 그대로 전파된다 (E6)`() = runTest {
+        val events = captureEvents()
+        coEvery { rateLimiter.requireAllowed("rl:reset-identity:uid:testUser", any(), any()) } throws
+            BusinessException(ErrorCode.TOO_MANY_REQUESTS)
+
+        val thrown = resetIdentityFailure(VerifyResetIdentityRequest(userId = "testUser", name = "홍길동", mail = "test@example.com"))
+
+        assertEquals(ErrorCode.TOO_MANY_REQUESTS, thrown?.errorCode)
+        assertEquals(ErrorCode.TOO_MANY_REQUESTS.name, events.single().failReason)
+        // 차단되면 계정 조회까지 가지 않는다.
+        coVerify(exactly = 0) { userRepository.findByUserId(any()) }
     }
 
     // ── 토큰 갱신 ────────────────────────────────────

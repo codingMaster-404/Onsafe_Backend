@@ -35,9 +35,5 @@ data class UserUpdateRequest(
 
     // verify-password 응답으로 받은 재인증 티켓(B1). 비밀번호를 바꿀 때는 current_password로
     // 대신할 수 있지만, 그 외 항목(이름·메일·전화·주소) 변경에는 이 티켓이 필요하다.
-    val reauthTicket: String? = null,
-
-    // 메일을 **실제로 바꿀 때만** 필요한 이메일 인증 티켓(verify-email-code 응답).
-    // 앱은 메일을 바꾸지 않아도 현재 값을 함께 보내므로, 값이 달라진 경우에만 요구한다.
-    val emailVerifyTicket: String? = null
+    val reauthTicket: String? = null
 )

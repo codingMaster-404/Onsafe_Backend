@@ -83,7 +83,7 @@ class GuardianService(
     // 유저당 활성 코드는 1개만 유지 — 재발급 시 이전 코드를 먼저 무효화해
     // 캡처/전달 과정에서 노출된 옛 코드가 계속 살아있지 않게 한다.
     suspend fun issuePairingCode(elderUserId: String): PairingCodeResponse {
-        // 재발급 남용 방지 — sendEmailCode/sendResetCode(시간당 3회)와 동일한 원칙.
+        // 재발급 남용 방지 — 코드 발급 API는 시간당 횟수를 제한한다.
         rateLimiter.requireAllowed("rl:issue-pairing-code:$elderUserId", limit = 5, windowSec = 3600)
 
         // 1:1 정책: 이미 다른 보호자와 연결된 상태면 새 코드 발급 자체를 거부한다. 발급을 허용하면

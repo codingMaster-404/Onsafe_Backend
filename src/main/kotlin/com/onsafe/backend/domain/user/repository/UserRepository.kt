@@ -37,8 +37,13 @@ class UserRepository(
         return if (doc.exists()) doc.toUser() else null
     }
 
+    // 정규화된 룩업(user_emails/{소문자 메일} → user_id)으로 찾는다 — users.mail은 입력 표기 그대로라
+    // 필드 쿼리로는 대소문자만 다른 메일을 못 찾는다(E4).
     suspend fun findByMail(mail: String): User? {
-        val snap = col.whereEqualTo("mail", mail).get().await()
+        val userId = emailLookup(mail).get().await().getString("user_id")
+        if (userId != null) return findByUserId(userId)
+        // v4.9 정규화 이전 가입자는 룩업 키가 입력 원문일 수 있다 — 예전과 같은 정확 일치 쿼리로 한 번 더 찾는다.
+        val snap = col.whereEqualTo("mail", mail.trim()).get().await()
         return snap.documents.firstOrNull()?.toUser()
     }
 

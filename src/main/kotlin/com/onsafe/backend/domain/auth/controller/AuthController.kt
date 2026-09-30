@@ -65,6 +65,18 @@ class AuthController(
         return ApiResponse.ok(response)
     }
 
+    @Operation(summary = "비밀번호 재설정 본인확인")
+    @PostMapping("/verify-reset-identity")
+    suspend fun verifyResetIdentity(
+        @Valid @RequestBody request: VerifyResetIdentityRequest,
+        exchange: ServerWebExchange
+    ): ApiResponse<VerifyResetIdentityResponse> {
+        val ipAddress = clientIpResolver.resolve(exchange)
+        val userAgent = exchange.request.headers.getFirst("User-Agent") ?: "unknown"
+        val response = authService.verifyResetIdentity(request, ipAddress, userAgent)
+        return ApiResponse.ok(response, "본인확인이 완료되었습니다.")
+    }
+
     @Operation(summary = "비밀번호 재설정")
     @PostMapping("/reset-password")
     suspend fun resetPassword(@Valid @RequestBody request: ResetPasswordRequest): ApiResponse<Unit> {
@@ -84,40 +96,6 @@ class AuthController(
     suspend fun checkMail(@Valid @RequestBody request: CheckMailRequest): ApiResponse<Unit> {
         authService.checkMail(request)
         return ApiResponse.ok(message = "사용 가능한 이메일입니다.")
-    }
-
-    @Operation(summary = "회원가입 이메일 인증코드 발송")
-    @PostMapping("/send-email-code")
-    suspend fun sendEmailCode(@Valid @RequestBody request: SendEmailCodeRequest): ApiResponse<Unit> {
-        authService.sendEmailCode(request)
-        return ApiResponse.ok(message = "인증코드가 발송되었습니다.")
-    }
-
-    @Operation(summary = "회원가입 이메일 인증코드 확인")
-    @PostMapping("/verify-email-code")
-    suspend fun verifyEmailCode(@Valid @RequestBody request: VerifyEmailCodeRequest): ApiResponse<VerifyEmailCodeResponse> {
-        val response = authService.verifyEmailCode(request)
-        return ApiResponse.ok(response, "이메일 인증이 완료되었습니다.")
-    }
-
-    @Operation(summary = "비밀번호 재설정 인증코드 발송")
-    @PostMapping("/send-reset-code")
-    suspend fun sendResetCode(
-        @Valid @RequestBody request: SendResetCodeRequest,
-        exchange: ServerWebExchange
-    ): ApiResponse<Unit> {
-        authService.sendResetCode(request, clientIpResolver.resolve(exchange))
-        // 아이디·메일이 맞지 않아도 같은 응답을 준다(C2). 문구도 발송을 단정하지 않는다.
-        return ApiResponse.ok(message = "입력한 정보가 일치하면 인증코드가 발송됩니다.")
-    }
-
-    @Operation(summary = "비밀번호 재설정 인증코드 확인")
-    @PostMapping("/verify-reset-code")
-    suspend fun verifyResetCode(
-        @Valid @RequestBody request: VerifyResetCodeRequest
-    ): ApiResponse<VerifyResetCodeResponse> {
-        val response = authService.verifyResetCode(request)
-        return ApiResponse.ok(response, "인증코드가 확인되었습니다.")
     }
 
     @Operation(summary = "토큰 재발급")
