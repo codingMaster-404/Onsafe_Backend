@@ -8,7 +8,7 @@ Terraform과 gcloud CLI 스크립트 두 가지 방식 모두 제공하며, 어�
 | 항목 | 리소스 |
 | --- | --- |
 | Artifact Registry | Docker 저장소 (asia-northeast3, `onsafe`) |
-| Secret Manager | `JWT_SECRET`, `ENCRYPTION_AES_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+| Secret Manager | `JWT_SECRET`, `ENCRYPTION_AES_KEY` (`AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`는 SES 제거로 미사용 — Terraform `secrets.tf`에는 배포·검증 후 정리할 때까지 남아 있음) |
 | Cloud Run 서비스 계정 | 런타임용 `onsafe-cloudrun` + IAM (Firestore/Firebase/Storage/FCM/로그) |
 | Memorystore for Redis | 1GB BASIC (`onsafe-redis`) — VPC 내부 접근만 허용 |
 | Serverless VPC Access Connector | `onsafe-connector` (10.8.0.0/28) |
@@ -69,10 +69,6 @@ openssl rand -base64 48 | tr -d '\n' \
 # base64 32바이트 (AES-256-GCM 키)
 openssl rand -base64 32 | tr -d '\n' \
   | gcloud secrets versions add ENCRYPTION_AES_KEY --data-file=-
-
-# SES IAM 사용자 자격증명
-printf 'AKIAxxxxxxxx' | gcloud secrets versions add AWS_ACCESS_KEY_ID --data-file=-
-printf 'xxxxxxxxxxxx' | gcloud secrets versions add AWS_SECRET_ACCESS_KEY --data-file=-
 ```
 
 ## 방법 B. Terraform
@@ -130,8 +126,8 @@ gcloud run deploy onsafe-kotlin-api \
   --service-account onsafe-cloudrun@on-safe-f1667.iam.gserviceaccount.com \
   --vpc-connector onsafe-connector \
   --vpc-egress private-ranges-only \
-  --set-env-vars SPRING_PROFILES_ACTIVE=prod,AWS_REGION=ap-northeast-2,TZ=Asia/Seoul,REDIS_HOST=10.x.x.x,REDIS_PORT=6379,FIREBASE_STORAGE_BUCKET=on-safe-f1667.appspot.com \
-  --set-secrets JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest
+  --set-env-vars SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,REDIS_HOST=10.x.x.x,REDIS_PORT=6379,FIREBASE_STORAGE_BUCKET=on-safe-f1667.appspot.com \
+  --set-secrets JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest
 ```
 
 Python AI 서버는 `--ingress internal` + `KOTLIN_INTERNAL_BASE` 를 Kotlin 서비스 URL로 지정.
