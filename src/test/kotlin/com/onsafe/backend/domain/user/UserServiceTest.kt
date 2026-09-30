@@ -178,6 +178,28 @@ class UserServiceTest {
     }
 
     @Test
+    fun `회원 탈퇴 - 페어링 코드가 없으면 Redis DEL을 보내지 않는다 (reset_code 정리 제거)`() = runTest {
+        stubDeleteUser()
+
+        userService.deleteUser("testUser", "ticket-1")
+
+        // 인자 없는 DEL은 Redis가 오류로 거부한다 — 지울 키가 없으면 호출 자체를 하지 않는다.
+        // (재인증 티켓 삭제는 별도 호출이라 제외하고 본다)
+        verify(exactly = 0) { redis.delete(*varargAny { it.startsWith("pairing_code:") || it.startsWith("reset_code:") }) }
+        verify(exactly = 0) { redis.delete() }
+    }
+
+    @Test
+    fun `회원 탈퇴 - 페어링 코드가 남아 있으면 그 코드 키만 지운다`() = runTest {
+        stubDeleteUser()
+        every { valueOps.getAndDelete("pairing_code_owner:testUser") } returns Mono.just("123456")
+
+        userService.deleteUser("testUser", "ticket-1")
+
+        verify(exactly = 1) { redis.delete("pairing_code:123456") }
+    }
+
+    @Test
     fun `회원 탈퇴 - 정리 도중 실패해도 계정 삭제는 유지되고 작업이 남는다 (잡이 마무리)`() = runTest {
         stubDeleteUser()
         coEvery { guardianLinkRepository.deleteAllInvolving("testUser") } throws RuntimeException("firestore down")
@@ -320,47 +342,31 @@ class UserServiceTest {
     }
 
     @Test
-    fun `개인정보 수정 - 메일을 바꾸는데 인증 티켓이 없으면 EMAIL_NOT_VERIFIED (B1)`() = runTest {
+    fun `개인정보 수정 - 메일을 바꿀 때 재인증만 있으면 메일 인증 티켓 없이 저장된다 (B3)`() = runTest {
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        every { valueOps.getAndDelete("verify_ticket:null") } returns Mono.empty()
-
-        val thrown = runCatching {
-            userService.updateUser(
-                "testUser",
-                UserUpdateRequest(mail = "new@example.com", reauthTicket = "ticket-1")
-            )
-        }.exceptionOrNull()
-
-        assertEquals(ErrorCode.EMAIL_NOT_VERIFIED, (thrown as BusinessException).errorCode)
-        coVerify(exactly = 0) { userRepository.saveWithLookups(any(), any()) }
-    }
-
-    @Test
-    fun `개인정보 수정 - 인증 티켓의 메일과 요청 메일이 다르면 EMAIL_NOT_VERIFIED`() = runTest {
-        coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        every { valueOps.getAndDelete("verify_ticket:mail-ticket") } returns Mono.just("other@example.com")
-
-        val thrown = runCatching {
-            userService.updateUser(
-                "testUser",
-                UserUpdateRequest(mail = "new@example.com", reauthTicket = "ticket-1", emailVerifyTicket = "mail-ticket")
-            )
-        }.exceptionOrNull()
-
-        assertEquals(ErrorCode.EMAIL_NOT_VERIFIED, (thrown as BusinessException).errorCode)
-    }
-
-    @Test
-    fun `개인정보 수정 - 메일 인증 티켓이 맞으면 저장된다`() = runTest {
-        coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        every { valueOps.getAndDelete("verify_ticket:mail-ticket") } returns Mono.just("new@example.com")
 
         val result = userService.updateUser(
             "testUser",
-            UserUpdateRequest(mail = "new@example.com", reauthTicket = "ticket-1", emailVerifyTicket = "mail-ticket")
+            UserUpdateRequest(mail = "new@example.com", reauthTicket = "ticket-1")
         )
 
         assertEquals("new@example.com", result.mail)
+        coVerify(exactly = 1) { userRepository.saveWithLookups(any(), match { it.mail == "new@example.com" }) }
+        // 메일 소유 확인(SES)을 없앴으므로 verify_ticket을 소비하지 않는다.
+        verify(exactly = 0) { valueOps.getAndDelete(any()) }
+    }
+
+    @Test
+    fun `개인정보 수정 - 재인증 없이 메일을 바꾸면 REAUTH_REQUIRED (B3 이후에도 유지)`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        every { valueOps.get("reauth_ticket:none") } returns Mono.empty()
+
+        val thrown = runCatching {
+            userService.updateUser("testUser", UserUpdateRequest(mail = "new@example.com", reauthTicket = "none"))
+        }.exceptionOrNull()
+
+        assertEquals(ErrorCode.REAUTH_REQUIRED, (thrown as BusinessException).errorCode)
+        coVerify(exactly = 0) { userRepository.saveWithLookups(any(), any()) }
     }
 
     @Test
