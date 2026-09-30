@@ -50,13 +50,6 @@ dependencies {
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
 
-    // AWS SDK v2 — SES 이메일 발송
-    implementation(platform("software.amazon.awssdk:bom:2.25.0"))
-    implementation("software.amazon.awssdk:sesv2")
-
-    // CompletableFuture.await() — SesAsyncClient 코루틴 연동
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8")
-
     // 유효성 검사
     implementation("org.springframework.boot:spring-boot-starter-validation")
 

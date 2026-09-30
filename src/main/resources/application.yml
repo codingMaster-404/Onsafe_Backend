@@ -46,11 +46,6 @@ springdoc:
   api-docs:
     path: /api-docs
 
-aws:
-  ses:
-    region: ${AWS_REGION:ap-northeast-2}
-    from: ${SES_FROM_EMAIL:}
-
 # Cloud Scheduler 가 /internal/jobs/** 트리거 시 X-Internal-Auth 헤더로 첨부하는 시크릿.
 # 실제 값은 Secret Manager 슬롯 INTERNAL_JOB_SECRET 에서 주입한다. 로컬에서는 빈 값이므로
 # 엔드포인트가 항상 FORBIDDEN 반환 — 실수로 외부에 노출돼도 fail-closed 상태 유지.

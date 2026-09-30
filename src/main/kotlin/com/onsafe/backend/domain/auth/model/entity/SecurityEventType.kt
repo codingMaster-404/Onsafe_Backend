@@ -17,7 +17,9 @@ enum class SecurityEventType {
     LOGOUT,
     /** 설정 화면에서 현재 비밀번호를 확인하고 변경 */
     PASSWORD_CHANGE,
-    /** 비밀번호 찾기(인증코드 → 재설정 티켓) 경유 변경 */
+    /** 비밀번호 찾기(본인확인 → 재설정 티켓) 경유 변경 */
     PASSWORD_RESET,
+    /** 비밀번호 찾기 본인확인 실패·rate limit 차단 — 이름·메일 대입 시도를 사후에 추적하기 위해 남긴다. */
+    PASSWORD_RESET_IDENTITY_FAIL,
     ACCOUNT_DELETED,
 }

@@ -88,7 +88,7 @@ class UserService(
      * 저장됐다. 앱은 수정 화면 진입 전 `verify-password`를 부르지만 저장 요청에는 그 사실이 담기지 않아
      * 서버가 알 수 없었다 — 그래서 재인증 티켓을 받는다.
      *
-     * 메일·전화는 값이 **실제로 바뀐 경우에만** 인증·중복 검사를 한다. 앱이 바꾸지 않은 항목도 현재 값을
+     * 메일·전화는 값이 **실제로 바뀐 경우에만** 중복 검사를 한다. 앱이 바꾸지 않은 항목도 현재 값을
      * 그대로 실어 보내기 때문에, 필드 존재만 보고 판단하면 이름만 고쳐도 저장이 막힌다.
      */
     suspend fun updateUser(userId: String, request: UserUpdateRequest): UserResponse {
@@ -106,16 +106,9 @@ class UserService(
             )
         }
 
+        // 메일 소유 확인은 하지 않는다(SES 제거) — 본인 확인(위 reauth)과 중복 검사(saveWithLookups)만 한다.
+        // 실제로 바뀐 메일인지는 409 사유(메일/전화) 구분에 쓴다.
         val newMail = request.mail?.takeIf { !it.equals(user.mail, ignoreCase = true) }
-        if (newMail != null) {
-            // 메일 소유 확인 — 가입·아이디 찾기와 같은 티켓을 1회 소비한다(D18과 같은 방침).
-            val ticketMail = log.guardRedis("메일 변경 인증 티켓 소비") {
-                redis.opsForValue().getAndDelete("verify_ticket:${request.emailVerifyTicket}").awaitFirstOrNull()
-            } ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
-            if (!ticketMail.equals(newMail, ignoreCase = true)) {
-                throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
-            }
-        }
 
         if (changingPassword) {
             // 비밀번호를 바꾸면 이 기기를 포함한 모든 세션을 끊는다(완료 문서 D6 — 새 토큰은 발급하지 않고
@@ -302,11 +295,8 @@ class UserService(
             // 무효화 키(token_valid_after:{userId})는 **지우지 않는다** — 지우면 탈퇴 전에 발급된
             // 토큰이 다시 통과한다. TTL(30일)로 자연 소멸하게 둔다.
             val code = redis.opsForValue().getAndDelete("pairing_code_owner:$userId").awaitFirstOrNull()
-            val keys = buildList {
-                add("reset_code:$userId")
-                if (code != null) add("pairing_code:$code")
-            }
-            redis.delete(*keys.toTypedArray()).awaitSingle()
+            // 지울 키가 없으면 DEL을 보내지 않는다 — 인자 없는 DEL은 Redis가 오류로 거부한다.
+            if (code != null) redis.delete("pairing_code:$code").awaitSingle()
         }
     }
 }

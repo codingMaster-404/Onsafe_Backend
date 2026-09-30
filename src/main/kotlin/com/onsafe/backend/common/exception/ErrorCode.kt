@@ -42,12 +42,9 @@ enum class ErrorCode(
     USER_ID_ALREADY_EXISTS(HttpStatus.CONFLICT, "이미 사용 중인 아이디입니다."),
 
     // ── 비밀번호 재설정 ────────────────────────────────────
-    INVALID_RESET_CODE(HttpStatus.BAD_REQUEST, "유효하지 않은 인증코드입니다. 코드가 만료되었거나 올바르지 않습니다."),
-
-    // ── 이메일 인증 ────────────────────────────────────────
-    INVALID_EMAIL_CODE(HttpStatus.BAD_REQUEST, "유효하지 않은 인증코드입니다. 코드가 만료되었거나 올바르지 않습니다."),
-    EMAIL_NOT_VERIFIED(HttpStatus.BAD_REQUEST, "이메일 인증을 먼저 완료해주세요."),
-    MAIL_SEND_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "이메일 발송에 실패했습니다."),
+    // 없는 아이디·이름 불일치·메일 불일치를 하나로 돌려준다 — 구분하면 응답만으로 가입 여부가 드러난다.
+    RESET_IDENTITY_MISMATCH(HttpStatus.BAD_REQUEST, "입력한 정보와 일치하는 계정을 찾을 수 없습니다."),
+    INVALID_RESET_TICKET(HttpStatus.BAD_REQUEST, "재설정 가능 시간이 지났거나 유효하지 않은 요청입니다. 본인확인부터 다시 진행해주세요."),
 
     // ── 알림 ──────────────────────────────────────────────
     FCM_SEND_FAILED(HttpStatus.INTERNAL_SERVER_ERROR, "알림 전송에 실패했습니다."),

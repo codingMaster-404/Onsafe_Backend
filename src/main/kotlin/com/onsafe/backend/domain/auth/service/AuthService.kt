@@ -7,7 +7,6 @@ import com.onsafe.backend.common.security.JwtProvider
 import com.onsafe.backend.common.security.TokenParseResult
 import com.onsafe.backend.common.security.TokenRevocationStore
 import com.onsafe.backend.common.security.TokenType
-import com.onsafe.backend.common.security.VerificationCodeGenerator
 import com.onsafe.backend.domain.auth.model.dto.*
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
 import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
@@ -27,40 +26,29 @@ import org.slf4j.LoggerFactory
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.stereotype.Service
-import java.security.MessageDigest
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 
 private const val MAX_USER_AGENT_LENGTH = 512 // 로그인 이력에 저장할 User-Agent 최대 길이(D4)
-private const val EMAIL_CODE_TTL = 180L    // 3분
-private const val RESET_CODE_TTL = 180L    // 3분
-private const val RESET_TICKET_TTL = 600L // 10분 — verifyResetCode가 발급한 재설정 티켓의 수명
-private const val EMAIL_VERIFY_TICKET_TTL = 900L // 15분 — verifyEmailCode 성공 후 register 가능 시간 (가입 폼 입력 항목이 많아 RESET_VERIFIED_TTL보다 여유를 둠)
+private const val RESET_TICKET_TTL = 600L // 10분 — verifyResetIdentity가 발급한 재설정 티켓의 수명
 
 @Service
 class AuthService(
     private val userRepository: UserRepository,
     private val passwordEncoder: PasswordEncoder,
     private val jwtProvider: JwtProvider,
-    private val emailService: EmailService,
     private val redis: ReactiveStringRedisTemplate,
     private val loginHistoryRepository: LoginHistoryRepository,
     private val settingsRepository: SettingsRepository,
     private val consentRepository: ConsentRepository,
     private val consentService: ConsentService,
     private val rateLimiter: RateLimiter,
-    private val verificationCodeGenerator: VerificationCodeGenerator,
     private val tokenRevocationStore: TokenRevocationStore,
     private val notificationService: NotificationService
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
-
-    // 인증코드 비교는 상수 시간으로 한다(D2). `!=`는 첫 불일치 문자에서 즉시 빠져나와 응답 시간에
-    // 일치한 자릿수가 드러난다. 코드가 6자리 고정이라 길이 차이로 새는 정보는 없다.
-    private fun codeMatches(stored: String, input: String): Boolean =
-        MessageDigest.isEqual(stored.toByteArray(Charsets.UTF_8), input.toByteArray(Charsets.UTF_8))
 
     // 검증 실패를 그대로 BusinessException으로 올린다 — 만료(EXPIRED)와 무효(INVALID)를 구분해
     // 던져야 클라이언트가 refresh 시도 vs 강제 로그아웃을 나눠 처리할 수 있다.
@@ -144,105 +132,19 @@ class AuthService(
         }
     }
 
-    suspend fun sendEmailCode(request: SendEmailCodeRequest) {
-        // 이메일 주소당 시간당 3회 — SES 비용 폭탄 및 인박스 스팸 방지.
-        rateLimiter.requireAllowed("rl:send-email:${request.mail}", limit = 3, windowSec = 3600)
-        val code = verificationCodeGenerator.generate()
-        log.guardRedis("email 인증코드 저장") {
-            redis.opsForValue()
-                .set("email_verify:${request.mail}", code, Duration.ofSeconds(EMAIL_CODE_TTL))
-                .awaitSingle()
-        }
-        emailService.sendEmailVerificationCode(request.mail, code)
-    }
-
-    // 인증 성공 시 mail-단독 플래그 대신 UUID 티켓을 발급해 응답으로 돌려준다. register 요청은
-    // 이 티켓을 첨부해야 통과되므로, 같은 mail을 다른 사용자가 훔쳐 자기 계정에 붙이는
-    // 선점(squatting) 시나리오를 원천 차단한다. 티켓 값에 mail이 담겨 있어 소비 시 요청의
-    // mail 필드와 대조해 티켓·mail 불일치도 걸러낸다.
-    suspend fun verifyEmailCode(request: VerifyEmailCodeRequest): VerifyEmailCodeResponse {
-        // 코드 브루트포스 방지 — 코드 공간이 10^6이라 창당 5회면 성공 확률이 무시할 수준.
-        rateLimiter.requireAllowed("rl:verify-email:${request.mail}", limit = 5, windowSec = 3600)
-        val key = "email_verify:${request.mail}"
-        val storedCode = log.guardRedis("email 인증코드 조회") { redis.opsForValue().get(key).awaitFirstOrNull() }
-            ?: throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
-        if (!codeMatches(storedCode, request.code)) throw BusinessException(ErrorCode.INVALID_EMAIL_CODE)
-
-        val ticket = UUID.randomUUID().toString()
-        log.guardRedis("email 인증코드 삭제 및 티켓 저장") {
-            redis.delete(key).awaitSingle()
-            redis.opsForValue()
-                .set("verify_ticket:$ticket", request.mail, Duration.ofSeconds(EMAIL_VERIFY_TICKET_TTL))
-                .awaitSingle()
-        }
-        return VerifyEmailCodeResponse(emailVerifyTicket = ticket)
-    }
-
-    /**
-     * 아이디·메일이 맞지 않아도 **같은 성공 응답**을 준다(C2). 이전에는 없는 아이디 404, 메일 불일치 400이라
-     * 응답만으로 가입 여부와 그 계정의 메일 일치 여부를 확인할 수 있었다. 대신 메일은 보내지 않는다.
-     * IP 제한을 함께 둬, 한 IP에서 여러 계정을 대상으로 돌려보는 시도를 막는다(userId 제한만으로는 못 막는다).
-     */
-    suspend fun sendResetCode(request: SendResetCodeRequest, ipAddress: String) {
-        rateLimiter.requireAllowed("rl:send-reset:${request.userId}", limit = 3, windowSec = 3600)
-        rateLimiter.requireAllowed("rl:send-reset:ip:$ipAddress", limit = 10, windowSec = 3600)
-        val user = userRepository.findByUserId(request.userId)
-        // 존재 여부·일치 여부를 응답으로 구분하지 않으므로 여기서 조용히 끝낸다. 실패 사유 기록은 C6(9단계).
-        if (user == null || user.mail != request.mail) return
-
-        val code = verificationCodeGenerator.generate()
-        log.guardRedis("reset 인증코드 저장") {
-            redis.opsForValue()
-                .set("reset_code:${request.userId}", code, Duration.ofSeconds(RESET_CODE_TTL))
-                .awaitSingle()
-        }
-        emailService.sendResetCode(request.mail, code)
-    }
-
-    /**
-     * 인증 성공 시 `reset_verified:{userId}` 플래그 대신 **UUID 티켓**을 발급해 응답으로 돌려준다(A3).
-     * 플래그 방식은 "이 userId가 인증을 마쳤다"는 사실만 남아, 인증한 사람과 재설정하는 사람이 같은지
-     * 확인하지 못했다 — userId만 알면 10분 안에 누구나 비밀번호를 바꿀 수 있었다.
-     * 가입 흐름의 이메일 인증 티켓(`verify_ticket:{uuid}`)과 같은 구조다.
-     */
-    suspend fun verifyResetCode(request: VerifyResetCodeRequest): VerifyResetCodeResponse {
-        rateLimiter.requireAllowed("rl:verify-reset:${request.userId}", limit = 5, windowSec = 3600)
-        val key = "reset_code:${request.userId}"
-        val storedCode = log.guardRedis("reset 인증코드 조회") { redis.opsForValue().get(key).awaitFirstOrNull() }
-            ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
-        if (!codeMatches(storedCode, request.code)) throw BusinessException(ErrorCode.INVALID_RESET_CODE)
-
-        val ticket = UUID.randomUUID().toString()
-        log.guardRedis("reset 인증코드 삭제 및 티켓 저장") {
-            redis.delete(key).awaitSingle()
-            redis.opsForValue()
-                .set("reset_ticket:$ticket", request.userId, Duration.ofSeconds(RESET_TICKET_TTL))
-                .awaitSingle()
-        }
-        return VerifyResetCodeResponse(resetTicket = ticket)
-    }
-
     suspend fun register(request: RegisterRequest, ipAddress: String) {
-        // 이메일 인증 티켓만으로는 이미 인증된 티켓을 재사용한 반복 register() 호출까지는 막지
-        // 못해 IP 기준으로 한 번 더 제한한다.
+        // 메일 인증(SES)이 없어 가입 요청 자체를 막는 수단은 IP 제한뿐이다 — 대량 가입·메일 선점 시도를 제한한다.
         rateLimiter.requireAllowed("rl:register:ip:$ipAddress", limit = 10, windowSec = 3600)
         if (userRepository.existsByUserId(request.userId)) {
             throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
         }
+        // 메일은 유일성만 보장하고 소유는 확인하지 않는다(SES 제거) — 남이 먼저 쓴 메일이면 실소유자가
+        // 가입할 수 없는 위험을 수용한다(작업 문서 §1).
         if (userRepository.existsByMail(request.mail)) {
             throw BusinessException(ErrorCode.MAIL_ALREADY_EXISTS)
         }
         if (userRepository.existsByPhone(request.phone)) {
             throw BusinessException(ErrorCode.PHONE_ALREADY_EXISTS)
-        }
-        // 티켓을 GETDEL로 원자적으로 소비 — 동시 요청이 같은 티켓을 재사용하려 해도 한 요청만
-        // 성공한다. 티켓 값(=verify 시점의 mail)이 이 요청의 mail과 일치해야만 인증으로 인정 —
-        // 이렇게 하지 않으면 인증만 마친 다른 사용자의 이메일을 자기 계정에 붙일 수 있다.
-        val ticketMail = log.guardRedis("email 인증 티켓 소비") {
-            redis.opsForValue().getAndDelete("verify_ticket:${request.emailVerifyTicket}").awaitFirstOrNull()
-        } ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
-        if (ticketMail != request.mail) {
-            throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
         }
 
         val now = java.time.LocalDateTime.now()
@@ -282,7 +184,6 @@ class AuthService(
                 else -> throw BusinessException(ErrorCode.USER_ID_ALREADY_EXISTS)
             }
         }
-        // 티켓은 위에서 GETDEL로 이미 소비돼 별도 정리 불필요.
     }
 
     suspend fun login(request: LoginRequest, ipAddress: String, userAgent: String): LoginResponse {
@@ -408,43 +309,82 @@ class AuthService(
     }
 
     /**
-     * 메일 소유를 증명한 요청만 받는다(C1). 이전에는 앱 화면에서만 인증을 강제해,
-     * API를 직접 호출하면 이름+메일 조합 대입으로 계정 존재 여부와 마스킹된 아이디를 얻을 수 있었다.
-     * 티켓은 가입(`register`)과 같은 `verify_ticket:{uuid}`다 — "이 메일의 소유자"라는 뜻이라
-     * 용도를 구분할 필요가 없다(작업 문서 §11-2).
+     * 이름+메일이 맞으면 **마스킹된** 아이디를 돌려준다(E8). 메일 인증(SES)을 없애 메일 소유 증명 없이
+     * 조회되므로, 이름+메일 대입으로 가입 여부를 알아내는 시도를 IP·메일 두 축으로 제한한다(E3) —
+     * IP 제한만으로는 여러 IP에서 한 메일을 돌려보는 시도를 막지 못한다.
+     * 없는 메일과 이름 불일치는 같은 USER_NOT_FOUND로 돌려준다.
      */
     suspend fun findId(request: FindIdRequest, ipAddress: String): FindIdResponse {
         rateLimiter.requireAllowed("rl:find-id:ip:$ipAddress", limit = 10, windowSec = 3600)
+        // 키를 정규화해 대소문자만 바꾼 같은 메일이 한도를 나눠 쓰지 못하게 한다.
+        rateLimiter.requireAllowed("rl:find-id:mail:${request.mail.trim().lowercase()}", limit = 5, windowSec = 3600)
 
-        // 조회를 먼저 하되 판단은 티켓 검증 뒤에 한다 — 순서를 바꾸면 Firestore 일시 오류로
-        // 티켓만 타 버리고(D15와 같은 이유), 반대로 조회 결과를 먼저 던지면 티켓 없이도 가입 여부가 새다.
         val user = userRepository.findByMail(request.mail)
-
-        // 티켓을 GETDEL로 1회 소비하고, 티켓에 담긴 mail과 요청의 mail이 같아야 인증으로 인정한다.
-        val ticketMail = log.guardRedis("아이디 찾기 인증 티켓 소비") {
-            redis.opsForValue().getAndDelete("verify_ticket:${request.emailVerifyTicket}").awaitFirstOrNull()
-        } ?: throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
-        if (ticketMail != request.mail) throw BusinessException(ErrorCode.EMAIL_NOT_VERIFIED)
-
-        if (user == null || user.name != request.name) throw BusinessException(ErrorCode.USER_NOT_FOUND)
+        if (user == null || !sameName(user.name, request.name)) throw BusinessException(ErrorCode.USER_NOT_FOUND)
         return FindIdResponse(userId = maskUserId(user.userId))
+    }
+
+    /**
+     * 비밀번호 찾기 본인확인(A안). 아이디·이름·메일이 모두 맞으면 재설정 티켓(`reset_ticket:{uuid}`, 10분)을 발급한다.
+     *
+     * 메일 인증코드(SES)를 없앤 대신의 확인 수단이라, 이름·메일을 아는 제3자도 통과할 수 있다(위험 수용, 작업 문서 E1).
+     * 그래서 ① 없는 아이디와 이름·메일 불일치를 **같은 에러**로 돌려주고(E5) ② IP·userId 두 축으로 횟수를 제한하며(E3)
+     * ③ 실패·차단을 보안 이벤트로 남긴다(E6).
+     */
+    suspend fun verifyResetIdentity(
+        request: VerifyResetIdentityRequest,
+        ipAddress: String,
+        userAgent: String
+    ): VerifyResetIdentityResponse {
+        // IP는 한 곳에서 여러 계정을 돌려보는 시도, userId는 한 계정에 이름·메일을 대입하는 시도를 막는다.
+        try {
+            rateLimiter.requireAllowed("rl:reset-identity:ip:$ipAddress", limit = 10, windowSec = 3600)
+            rateLimiter.requireAllowed("rl:reset-identity:uid:${request.userId}", limit = 5, windowSec = 3600)
+        } catch (e: BusinessException) {
+            if (e.errorCode == ErrorCode.TOO_MANY_REQUESTS) {
+                recordSecurityEvent(
+                    request.userId, SecurityEventType.PASSWORD_RESET_IDENTITY_FAIL, ipAddress, userAgent,
+                    success = false, failReason = ErrorCode.TOO_MANY_REQUESTS.name
+                )
+            }
+            throw e
+        }
+
+        val user = userRepository.findByUserId(request.userId)
+        if (user == null || !sameName(user.name, request.name) || !sameMail(user.mail, request.mail)) {
+            // 응답은 하나로 묶되 기록에는 실제 사유를 남긴다 — 사후 조사에서 대입 시도와 오타를 구분할 수 있게.
+            recordSecurityEvent(
+                request.userId, SecurityEventType.PASSWORD_RESET_IDENTITY_FAIL, ipAddress, userAgent,
+                success = false,
+                failReason = if (user == null) ErrorCode.USER_NOT_FOUND.name else ErrorCode.RESET_IDENTITY_MISMATCH.name
+            )
+            throw BusinessException(ErrorCode.RESET_IDENTITY_MISMATCH)
+        }
+
+        val ticket = UUID.randomUUID().toString()
+        log.guardRedis("reset 티켓 저장") {
+            redis.opsForValue()
+                .set("reset_ticket:$ticket", user.userId, Duration.ofSeconds(RESET_TICKET_TTL))
+                .awaitSingle()
+        }
+        return VerifyResetIdentityResponse(resetTicket = ticket)
     }
 
     suspend fun resetPassword(request: ResetPasswordRequest) {
         // 사용자 조회를 먼저 한다 — 티켓은 저장 직전에 소비해야 Firestore 일시 오류로 티켓이 타 버려
-        // 인증코드 발송부터 다시 하는 일이 없다(2단계 B4 선점과 같은 방침).
-        // 없는 사용자도 INVALID_RESET_CODE로 돌려준다 — USER_NOT_FOUND를 주면 티켓 없이도
+        // 본인확인부터 다시 하는 일이 없다(2단계 B4 선점과 같은 방침).
+        // 없는 사용자도 INVALID_RESET_TICKET으로 돌려준다 — USER_NOT_FOUND를 주면 티켓 없이도
         // 아이디 존재 여부를 확인할 수 있어 C2로 막은 통로가 여기로 다시 열린다.
         val user = userRepository.findByUserId(request.userId)
-            ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
+            ?: throw BusinessException(ErrorCode.INVALID_RESET_TICKET)
 
         // 티켓을 GETDEL로 원자적으로 소비 — 동시 요청이 같은 티켓을 재사용하려 해도 한 요청만 통과한다.
         val ticketKey = "reset_ticket:${request.resetTicket}"
         val ticketUserId = log.guardRedis("reset 티켓 소비") {
             redis.opsForValue().getAndDelete(ticketKey).awaitFirstOrNull()
-        } ?: throw BusinessException(ErrorCode.INVALID_RESET_CODE)
+        } ?: throw BusinessException(ErrorCode.INVALID_RESET_TICKET)
         // 티켓에 담긴 userId와 요청의 userId가 다르면 남의 계정을 바꾸려는 요청이다.
-        if (ticketUserId != request.userId) throw BusinessException(ErrorCode.INVALID_RESET_CODE)
+        if (ticketUserId != request.userId) throw BusinessException(ErrorCode.INVALID_RESET_TICKET)
 
         // 비밀번호를 잊었거나 탈취가 의심돼 재설정하는 경우라 기존 세션을 모두 끊는다.
         // 저장보다 먼저 한다 — 저장 후 무효화가 실패하면 비밀번호만 바뀌고 옛 세션이 남는다.
@@ -462,4 +402,10 @@ class AuthService(
         if (userId.length <= 3) return userId
         return userId.take(3) + "*".repeat(userId.length - 3)
     }
+
+    // 본인확인 비교 규칙(E4). 이름은 앞뒤 공백만 무시하고, 메일은 대소문자도 무시한다 —
+    // 메일 룩업 키 정규화(v4.9, 소문자)·메일 변경 비교와 같은 규칙이라 같은 메일을 다르게 판단하지 않는다.
+    private fun sameName(stored: String, input: String) = stored.trim() == input.trim()
+
+    private fun sameMail(stored: String, input: String) = stored.trim().equals(input.trim(), ignoreCase = true)
 }
