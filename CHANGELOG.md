@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased] - feat/ses-replacement-back (2026-09-30)
+
+### 메일 인증(AWS SES) 제거 · 비밀번호 재설정 본인확인 방식 전환 (API 스펙 v4.14)
+
+**변경 파일:** `AuthController.kt`, `AuthService.kt`, `UserService.kt`, `UserRepository.kt`, `ErrorCode.kt`, `SecurityEventType.kt`, `RegisterRequest.kt`·`FindIdRequest.kt`·`ResetPasswordRequest.kt`·`UserUpdateRequest.kt`, `VerifyResetIdentityRequest/Response.kt`(신규), `GuardianService.kt`(주석), `build.gradle.kts`, `application.yml`, `docker-compose.yml`, `.env.example`, `.github/workflows/deploy-cloudrun.yml`, `infra/README.md`, `infra/scripts/40_secrets.sh`, `CLAUDE.md`, `README.md`, `v4.0_onsafe_api_spec.md`
+
+#### Added
+- **`POST /api/auth/verify-reset-identity`**: `{user_id, name, mail}`이 모두 맞으면 `reset_ticket`(1회용, 10분) 발급. 실패 사유는 `RESET_IDENTITY_MISMATCH` 하나로 응답, rate limit IP 10회/h + 아이디 5회/h
+- **`ErrorCode.RESET_IDENTITY_MISMATCH`·`INVALID_RESET_TICKET`**, **`SecurityEventType.PASSWORD_RESET_IDENTITY_FAIL`**(본인확인 실패·차단 기록)
+- **`find-id` 메일 기준 rate limit**(5회/h, 정규화 키) — 메일 소유 확인이 없어져 IP 제한만으로는 한 메일을 돌려보는 시도를 못 막음
+
+#### Changed
+- **`reset-password`**: 티켓 오류 코드 `INVALID_RESET_CODE` → `INVALID_RESET_TICKET` (요청 형식·티켓 검증 로직은 그대로)
+- **`register`·`find-id`·`PUT /api/users/{user_id}`**: `email_verify_ticket` 제거 — 메일 중복 검사만 유지, 메일 변경은 본인 확인(`reauth_ticket` 또는 현재 비밀번호)만 요구
+- **`UserRepository.findByMail`**: `user_emails` 정규화 룩업 우선 조회(메일 대소문자 무시), 없으면 기존 정확 일치 쿼리
+- **탈퇴 Redis 정리**: `reset_code` 키 제거에 맞춰 페어링 코드가 있을 때만 `DEL` (키 0개 `DEL`은 Redis 오류)
+
+#### Removed
+- **`send-email-code`·`verify-email-code`·`send-reset-code`·`verify-reset-code`** 및 DTO 6종, `EmailService`, `SesConfig`, `EmailServiceTest`
+- **`ErrorCode.INVALID_RESET_CODE`·`INVALID_EMAIL_CODE`·`EMAIL_NOT_VERIFIED`·`MAIL_SEND_FAILED`**
+- **의존성·설정**: `software.amazon.awssdk:bom`·`sesv2`, `kotlinx-coroutines-jdk8`, `application.yml`의 `aws.ses`, 배포·compose·`.env.example`의 `AWS_*`·`SES_FROM_EMAIL`
+
+#### Security (수용한 위험)
+- 메일 소유를 확인하지 않으므로 이름·메일을 아는 제3자의 비밀번호 재설정, 본인확인·아이디 찾기 응답을 통한 이름·메일 일치 여부 확인, 남의 메일 선점 가입이 가능하다 — rate limit·에러코드 통일·실패 기록으로 완화
+- **구버전 앱은 가입·아이디 찾기·재설정 불가** → 서버·앱 동시 배포 필요
+
+---
+
 ## [main] - 2026-08-05
 
 ### PR #24 — 로그인 이력 저장 실패 시 error 로그 남기기
