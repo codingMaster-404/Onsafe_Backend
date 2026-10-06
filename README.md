@@ -152,3 +152,29 @@ docker-compose up --build
 | **J1(Redis), J2. docker-compose 로컬 개발** | 개발자 로컬 환경 — `docker-compose.yml` (파이프라인 미사용) |
 | **J13. Android AAB 서명 / Play 업로드** | OnSafe 프론트 저장소 |
 | **J14. ProGuard / R8 최적화** | Android 앱 빌드 옵션 (백엔드 무관) |
+
+---
+
+## 11. 관측 및 운영
+
+> 이 섹션 전체가 **런타임/운영 영역**이라 매 배포마다 파이프라인이 건드리는 항목은 거의 없다.
+
+### 11.1 앱 코드에 내장 (배포 산출물에 포함)
+
+배포 파이프라인이 별도로 세팅하지 않고, 앱 코드에 이미 들어있어서 **자동으로 함께 배포된다**.
+
+| 항목 | 실제 위치 |
+|---|---|
+| **K2. 구조화 JSON 로깅** | logback 설정 (앱 코드) |
+| **K5. API Rate Limiter 적용** | `common/ratelimit/RateLimiter.kt` |
+| **K7. CORS 오리진 정책** | Spring WebFlux config |
+| **K8. 표준 에러 응답** | `common/exception/*`, `ApiResponse` |
+
+### 11.2 배포 이후 운영 (파이프라인 외부)
+
+| 항목 | 제외 이유 |
+|---|---|
+| **K1. Cloud Logging 수집** | Cloud Run stdout/stderr 자동 수집. 파이프라인 개입 없음 |
+| **K3. Cloud Monitoring 알림** | 알림 규칙은 콘솔/Terraform 최초 1회 설정. 배포 주기와 무관 |
+| **K4. 에러 집계 도구 (Sentry 등)** | 검토 단계 — 코드·파이프라인 모두 미도입 |
+| **K6. Internal API IP 화이트리스트** | Cloud Run `--ingress internal` 설정 or 인프라 레벨. 최초/변경 시만 |
