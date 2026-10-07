@@ -34,7 +34,8 @@ class HeartbeatWatchdogJob(
     companion object {
         // Heartbeat 주기 2분 × 3회 미수신을 오프라인으로 판정. 짧으면 일시적 네트워크 끊김에도
         // 오탐이 잦고, 길면 진짜 위험 상황 감지가 지연된다.
-        private val OFFLINE_THRESHOLD = Duration.ofMinutes(6)
+        // 실시간 영상(LIVE) 시작 전 기기 확인도 같은 기준을 쓴다(LiveService) — 바꾸면 두 곳이 함께 바뀐다.
+        val OFFLINE_THRESHOLD: Duration = Duration.ofMinutes(6)
         private const val SCAN_LIMIT = 500
     }
 

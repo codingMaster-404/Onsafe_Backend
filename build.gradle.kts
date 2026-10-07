@@ -50,6 +50,11 @@ dependencies {
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
 
+    // LiveKit 서버 SDK — 보호자 실시간 영상(LIVE) 토큰 발급·방 API.
+    // 0.10.0부터 protobuf 4.x, 0.11.0부터 Kotlin 2.3 메타데이터로 빌드돼 이 프로젝트(Kotlin 2.1.20, Firebase/gRPC protobuf 3.25)와
+    // 충돌한다(0.16.0 컴파일 실패 확인). 호환되는 마지막 버전 0.9.2로 고정 — Kotlin 2.3 전환 시 함께 올린다.
+    implementation("io.livekit:livekit-server:0.9.2")
+
     // 유효성 검사
     implementation("org.springframework.boot:spring-boot-starter-validation")
 

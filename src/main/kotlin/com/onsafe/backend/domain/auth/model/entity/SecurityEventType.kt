@@ -22,4 +22,8 @@ enum class SecurityEventType {
     /** 비밀번호 찾기 본인확인 실패·rate limit 차단 — 이름·메일 대입 시도를 사후에 추적하기 위해 남긴다. */
     PASSWORD_RESET_IDENTITY_FAIL,
     ACCOUNT_DELETED,
+    /** 보호자가 실시간 영상 시청 시작(연장 포함) — 피보호자 영상 열람 책임 추적용. 대상은 [LoginHistory.targetUserId]. */
+    LIVE_VIEW_START,
+    /** 보호자가 실시간 영상 시청 종료 */
+    LIVE_VIEW_END,
 }

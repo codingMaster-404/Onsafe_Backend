@@ -3,6 +3,8 @@ package com.onsafe.backend.domain.settings.controller
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
+import com.onsafe.backend.domain.settings.model.dto.LiveVideoSettingsRequest
+import com.onsafe.backend.domain.settings.model.dto.LiveVideoSettingsResponse
 import com.onsafe.backend.domain.settings.model.dto.MarketingConsentRequest
 import com.onsafe.backend.domain.settings.model.dto.MarketingConsentResponse
 import com.onsafe.backend.domain.settings.model.dto.NotificationSettingsRequest
@@ -71,5 +73,26 @@ class SettingsController(private val settingsService: SettingsService) {
     ): ApiResponse<MarketingConsentResponse> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
         return ApiResponse.ok(settingsService.updateMarketingConsent(userId, request), "마케팅 수신 동의 변경 완료")
+    }
+
+    @Operation(summary = "실시간 영상(LIVE) 송출 동의 조회", security = [SecurityRequirement(name = "BearerAuth")])
+    @GetMapping("/live-video/{userId}")
+    suspend fun getLiveVideoSettings(
+        @PathVariable userId: String,
+        @AuthenticationPrincipal principal: String
+    ): ApiResponse<LiveVideoSettingsResponse> {
+        if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
+        return ApiResponse.ok(settingsService.getLiveVideoSettings(userId))
+    }
+
+    @Operation(summary = "실시간 영상(LIVE) 송출 동의 변경 — 본인만", security = [SecurityRequirement(name = "BearerAuth")])
+    @PutMapping("/live-video/{userId}")
+    suspend fun updateLiveVideoSettings(
+        @PathVariable userId: String,
+        @Valid @RequestBody request: LiveVideoSettingsRequest,
+        @AuthenticationPrincipal principal: String
+    ): ApiResponse<LiveVideoSettingsResponse> {
+        if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
+        return ApiResponse.ok(settingsService.updateLiveVideoSettings(userId, request), "실시간 영상 동의 변경 완료")
     }
 }

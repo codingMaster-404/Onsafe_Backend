@@ -11,8 +11,11 @@ import com.onsafe.backend.domain.guardian.model.dto.PairingRequestResponse
 import com.onsafe.backend.domain.guardian.model.dto.WardResponse
 import com.onsafe.backend.domain.guardian.model.entity.GuardianLink
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
+import com.onsafe.backend.domain.live.service.LiveSessionTerminator
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.service.NotificationService
+import com.onsafe.backend.domain.settings.model.dto.LiveVideoSettingsRequest
+import com.onsafe.backend.domain.settings.service.SettingsService
 import com.onsafe.backend.domain.user.repository.UserRepository
 import kotlinx.coroutines.reactive.awaitFirstOrNull
 import kotlinx.coroutines.reactive.awaitSingle
@@ -40,7 +43,9 @@ class GuardianService(
     private val notificationService: NotificationService,
     private val redis: ReactiveStringRedisTemplate,
     private val rateLimiter: RateLimiter,
-    private val verificationCodeGenerator: VerificationCodeGenerator
+    private val verificationCodeGenerator: VerificationCodeGenerator,
+    private val liveSessionTerminator: LiveSessionTerminator,
+    private val settingsService: SettingsService
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -216,7 +221,7 @@ class GuardianService(
     // 새로 맺어졌어도 그 관계를 자동 삭제하고 이 요청을 성립시킨다("교체 + 승인" 정책).
     // 역할 배타성 위반만 여전히 거부 — 이건 교체할 수 있는 축이 아님.
     // 대체된 파트너(들)에게는 "당신은 이제 A의 보호자가 아닙니다" FCM 을 발송한다.
-    suspend fun approvePairingRequest(elderUserId: String, requestId: String): WardResponse {
+    suspend fun approvePairingRequest(elderUserId: String, requestId: String, liveVideoEnabled: Boolean? = null): WardResponse {
         val payload = redisGuarded {
             redis.opsForValue().getAndDelete("pairing_request:$requestId").awaitFirstOrNull()
         } ?: throw BusinessException(ErrorCode.PAIRING_REQUEST_INVALID)
@@ -252,6 +257,9 @@ class GuardianService(
         // 대체된 파트너(들)에게 해제 통지 — "당신은 이제 A의 보호자가 아닙니다" 성격.
         // 이 새 페어링에 참여하는 두 당사자(guardian, elder)는 제외해야 자기 자신이 자기 페어링에
         // 대해 해제 알림을 받는 어색함이 안 생긴다.
+        // 밀려난 관계의 진행 중 실시간 영상은 즉시 끊는다(W4) — 피보호자 단위 세션이라 그 피보호자의 방을 지운다.
+        displaced.forEach { oldLink -> liveSessionTerminator.terminate(oldLink.elderUserId, reason = "pairing_displaced") }
+
         displaced.forEach { oldLink ->
             val recipient = if (oldLink.guardianUserId == guardianUserId) oldLink.elderUserId
                             else oldLink.guardianUserId
@@ -288,6 +296,13 @@ class GuardianService(
                 )
             )
         }.onFailure { e -> log.warn("페어링 승인 FCM 실패 — guardianUserId=$guardianUserId cause=${e.message}") }
+
+        // 승인 다이얼로그의 "실시간 영상 보기 허용" 값(W9) — 연결은 이미 성립했으므로 저장 실패가 승인을 되돌리지 않게 한다.
+        // 철회(false)면 SettingsService가 진행 중 LIVE도 끊는다.
+        if (liveVideoEnabled != null) {
+            runCatching { settingsService.updateLiveVideoSettings(elderUserId, LiveVideoSettingsRequest(enabled = liveVideoEnabled)) }
+                .onFailure { e -> log.warn("승인 시 영상 동의 저장 실패 — elderUserId=$elderUserId cause=${e.message}") }
+        }
 
         return WardResponse.from(elder)
     }
@@ -336,9 +351,13 @@ class GuardianService(
     // 어느 쪽(보호자/피보호자)이 호출했는지 몰라도 되도록 양방향 문서 ID를 모두 시도한다.
     // 해제 성립 후 상대방에게 FCM 통지 — "누가 언제 끊었는지" 상대가 알 수 있어야 함(21번째 회의 §7c).
     suspend fun unpair(userId: String, counterpartUserId: String) {
-        val deleted = guardianLinkRepository.delete(userId, counterpartUserId) ||
-            guardianLinkRepository.delete(counterpartUserId, userId)
-        if (!deleted) throw BusinessException(ErrorCode.PAIRING_NOT_FOUND)
+        // 어느 방향 문서가 지워졌는지로 피보호자를 정한다 — 진행 중 실시간 영상을 끊어야 한다(W4).
+        val elderUserId = when {
+            guardianLinkRepository.delete(userId, counterpartUserId) -> counterpartUserId
+            guardianLinkRepository.delete(counterpartUserId, userId) -> userId
+            else -> throw BusinessException(ErrorCode.PAIRING_NOT_FOUND)
+        }
+        liveSessionTerminator.terminate(elderUserId, reason = "unpaired")
 
         val initiator = userRepository.findByUserId(userId)
         runCatching {

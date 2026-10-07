@@ -12,6 +12,7 @@ import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
 import com.onsafe.backend.domain.consent.repository.ConsentRepository
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
+import com.onsafe.backend.domain.live.service.LiveSessionTerminator
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.settings.repository.SettingsRepository
@@ -55,7 +56,8 @@ class UserService(
     private val fcmTokenRepository: FcmTokenRepository,
     private val rateLimiter: RateLimiter,
     private val redis: ReactiveStringRedisTemplate,
-    private val deletionTaskRepository: DeletionTaskRepository
+    private val deletionTaskRepository: DeletionTaskRepository,
+    private val liveSessionTerminator: LiveSessionTerminator
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -240,6 +242,12 @@ class UserService(
      */
     suspend fun purge(task: DeletionTask) {
         val userId = task.userId
+        // 진행 중 실시간 영상을 먼저 끊는다(W4) — 본인이 피보호자면 자기 방, 보호자면 연결된 피보호자의 방.
+        // 연결 문서를 지우기 전에 조회해야 한다. 재시도 때는 연결이 이미 없을 수 있으나 남은 세션은 TTL(최대 5분)로 끝난다.
+        val wards = runCatching { guardianLinkRepository.findWardsOf(userId).map { it.elderUserId } }
+            .onFailure { e -> log.warn("실시간 영상 종료 대상 조회 실패 — userId={}: {}", userId, e.message) }
+            .getOrDefault(emptyList())
+        (listOf(userId) + wards).forEach { liveSessionTerminator.terminate(it, reason = "account_deleted") }
         // GCS blob 삭제는 개별 SDK 호출이라 서로 독립적 — 병렬로 처리한다.
         coroutineScope {
             task.logIds.map { logId ->

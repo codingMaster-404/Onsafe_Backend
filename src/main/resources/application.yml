@@ -40,6 +40,13 @@ encryption:
 consent:
   enforcement-enabled: ${CONSENT_ENFORCEMENT_ENABLED:false}
 
+# 보호자 실시간 영상(LIVE) — LiveKit Cloud. url은 앱이 접속할 wss:// 주소, 키·시크릿은 토큰 서명용.
+# 비어 있으면 LIVE API만 503(LIVE_UNAVAILABLE)으로 거절하고 다른 기능은 그대로 동작한다.
+livekit:
+  url: ${LIVEKIT_URL:}
+  api-key: ${LIVEKIT_API_KEY:}
+  api-secret: ${LIVEKIT_API_SECRET:}
+
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
