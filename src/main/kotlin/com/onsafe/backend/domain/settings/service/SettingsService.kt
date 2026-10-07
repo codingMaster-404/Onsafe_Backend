@@ -2,6 +2,9 @@ package com.onsafe.backend.domain.settings.service
 
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
+import com.onsafe.backend.domain.live.service.LiveSessionTerminator
+import com.onsafe.backend.domain.settings.model.dto.LiveVideoSettingsRequest
+import com.onsafe.backend.domain.settings.model.dto.LiveVideoSettingsResponse
 import com.onsafe.backend.domain.settings.model.dto.MarketingConsentRequest
 import com.onsafe.backend.domain.settings.model.dto.MarketingConsentResponse
 import com.onsafe.backend.domain.settings.model.dto.NotificationSettingsRequest
@@ -16,7 +19,8 @@ import java.time.LocalDateTime
 @Service
 class SettingsService(
     private val settingsRepository: SettingsRepository,
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val liveSessionTerminator: LiveSessionTerminator
 ) {
 
     suspend fun getNotificationSettings(userId: String): NotificationSettingsResponse =
@@ -63,6 +67,32 @@ class SettingsService(
             else -> user
         }
         return MarketingConsentResponse.from(userRepository.save(updated))
+    }
+
+    suspend fun getLiveVideoSettings(userId: String): LiveVideoSettingsResponse =
+        LiveVideoSettingsResponse.from(getOrCreateSettings(userId))
+
+    suspend fun updateLiveVideoSettings(userId: String, request: LiveVideoSettingsRequest): LiveVideoSettingsResponse {
+        val enabled = request.enabled ?: throw BusinessException(ErrorCode.INVALID_INPUT)
+        val settings = getOrCreateSettings(userId)
+        val now = LocalDateTime.now()
+        // 마케팅 동의와 같은 규칙 — 상태가 바뀔 때만 시각을 남겨, 같은 값 재전송으로 동의 기록이 덮이지 않게 한다.
+        val updated = when {
+            enabled && !settings.liveVideoEnabled -> settings.copy(
+                liveVideoEnabled = true,
+                liveVideoConsentedAt = now,
+                liveVideoWithdrawnAt = null,
+            )
+            !enabled && settings.liveVideoEnabled -> settings.copy(
+                liveVideoEnabled = false,
+                liveVideoWithdrawnAt = now,
+            )
+            else -> return LiveVideoSettingsResponse.from(settings)
+        }
+        val saved = settingsRepository.save(updated)
+        // 철회하면 진행 중 송출도 즉시 끊는다(W4) — 새 송출 토큰만 막으면 이미 나가는 영상은 계속된다.
+        if (!saved.liveVideoEnabled) liveSessionTerminator.terminate(userId, reason = "consent_withdrawn")
+        return LiveVideoSettingsResponse.from(saved)
     }
 
     private suspend fun getOrCreateSettings(userId: String): UserSettings =

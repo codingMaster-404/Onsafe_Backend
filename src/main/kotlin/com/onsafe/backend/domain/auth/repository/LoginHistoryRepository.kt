@@ -60,6 +60,7 @@ class LoginHistoryRepository(private val firestore: Firestore) {
         userAgent = getString("user_agent"),
         success = getBoolean("success") ?: false,
         failReason = getString("fail_reason"),
+        targetUserId = getString("target_user_id"),
         timestamp = getTimestamp("timestamp")?.toLocalDateTime() ?: LocalDateTime.now()
     )
 
@@ -70,6 +71,7 @@ class LoginHistoryRepository(private val firestore: Firestore) {
         "user_agent" to userAgent,
         "success" to success,
         "fail_reason" to failReason,
+        "target_user_id" to targetUserId,
         "timestamp" to timestamp.toTimestamp()
     )
 }
