@@ -9,7 +9,7 @@
 | 섹션 | 필요 | 불필요 |
 |---|---|---|
 | **10. 인프라 및 배포** | J1(Kotlin·Python), J3, J5, J6, J7, J8, J9, J10, J11 | J1(Redis), J2, J4, J12, J13, J14 |
-| **11. 관측 및 운영** | K2, K5, K7, K8 (앱 코드에 내장) | K1, K3, K4, K6 |
+| **11. 관측 및 운영** | 없음 (K5·K7·K8은 앱 코드에 포함돼 함께 배포) | K1, K2(미도입), K3, K4, K6 |
 
 ---
 
@@ -20,11 +20,13 @@
 ### 파이프라인 실행 주체·산출물
 | 항목 | 역할 |
 |---|---|
-| **J9. GitHub Actions CI (test + build)** | 파이프라인 실행 주체. push/PR 트리거 |
+| **J9. GitHub Actions CI (test + build)** | 파이프라인 실행 주체. main push·PR 트리거 — test는 둘 다, Docker 빌드 검증은 PR만 (main push 빌드는 배포 워크플로가 수행) |
 | **J10. Workload Identity OIDC** | GitHub Actions → GCP 인증 (키 없이) |
 | **J1. Docker 컨테이너화 (Kotlin / Python)** | 배포용 이미지 빌드 |
 | **J8. Artifact Registry** | 빌드된 이미지 push, Cloud Run이 pull |
 | **J3. Cloud Run 배포 (Kotlin 퍼블릭 / Python 내부)** | 최종 배포 타깃 |
+| **— Firestore 인덱스 적용** | `firestore.indexes.json`을 운영 Firestore에 반영 (실패해도 배포는 계속) |
+| **— Cloud Scheduler 잡 등록** | `/internal/jobs/*` 트리거 3개 등록·갱신 (login-history-cleanup·heartbeat-watchdog·deletion-retry) |
 
 ### 앱 런타임 전제조건 (배포 파이프라인이 참조·주입)
 | 항목 | 역할 |
@@ -57,9 +59,8 @@
 
 | 항목 | 실제 위치 |
 |---|---|
-| **K2. 구조화 JSON 로깅** | logback 설정 (앱 코드) |
-| **K5. API Rate Limiter 적용** | `common/ratelimit/RateLimiter.kt` |
-| **K7. CORS 오리진 정책** | Spring WebFlux config |
+| **K5. API Rate Limiter 적용** | `common/ratelimit/RateLimiter.kt` — 전역 필터가 아니라 일부 엔드포인트(로그인·회원가입·아이디/메일 확인·아이디 찾기·재설정 본인확인·페어링·비밀번호 확인)에서 서비스가 호출 |
+| **K7. CORS 오리진 정책** | Python AI 서버 `app/main.py` `CORSMiddleware` (Kotlin API에는 CORS 설정 없음) |
 | **K8. 표준 에러 응답** | `common/exception/*`, `ApiResponse` |
 
 ## ❌ git 배포와 무관
@@ -67,9 +68,10 @@
 | 항목 | 제외 이유 |
 |---|---|
 | **K1. Cloud Logging 수집** | Cloud Run stdout/stderr 자동 수집. 파이프라인 개입 없음 |
-| **K3. Cloud Monitoring 알림** | 알림 규칙은 콘솔/Terraform **최초 1회** 설정. 배포 주기와 무관 |
+| **K2. 구조화 JSON 로깅** | 미도입 — logback·`logging.structured` 설정 없이 기본 텍스트 로그. 도입하면 앱 코드에 포함되는 항목 |
+| **K3. Cloud Monitoring 알림** | 알림 정책 미설정 — Terraform은 Monitoring API 활성화·`roles/monitoring.metricWriter`만 있음. 설정하게 되면 콘솔/Terraform 1회로 배포 주기와 무관 |
 | **K4. 에러 집계 도구 (Sentry 등)** | "검토" 단계 — 코드·파이프라인 모두 미도입 |
-| **K6. Internal API IP 화이트리스트** | Cloud Run `--ingress internal` 설정 or 인프라 레벨. 최초/변경 시만 |
+| **K6. Internal API IP 화이트리스트** | 미설정 — Python AI 서버만 배포 옵션 `--ingress internal-and-cloud-load-balancing`. Kotlin API는 공개 서비스라 `/internal/**`을 `X-Internal-Auth` 헤더 시크릿으로만 보호하며, IP 제한은 인프라 레벨 작업으로 남아 있음 |
 
 ---
 
