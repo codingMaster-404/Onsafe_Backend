@@ -3,7 +3,9 @@ package com.onsafe.backend.domain.notification.repository
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.Query
+import com.onsafe.backend.common.util.ExpiryBackfillResult
 import com.onsafe.backend.common.util.await
+import com.onsafe.backend.common.util.backfillExpiredAt
 import com.onsafe.backend.common.util.deleteInBatches
 import com.onsafe.backend.common.util.toLocalDateTime
 import com.onsafe.backend.common.util.toTimestamp
@@ -24,8 +26,10 @@ class NotificationRepository(private val firestore: Firestore) {
     }
 
     // Firestore 복합 인덱스(user_id ASC, created_at DESC) 필요 — firestore.indexes.json 참고.
+    // 보관 기간(7일) 이내만 — Firestore TTL 은 만료 후 최대 24시간 늦게 지우므로 조회에서도 걸러 앱 안내("최근 7일")와 맞춘다.
     suspend fun findRecentByUserId(userId: String, limit: Int = 50): List<Notification> =
         col.whereEqualTo("user_id", userId)
+            .whereGreaterThanOrEqualTo("created_at", LocalDateTime.now().minus(Notification.RETENTION_PERIOD).toTimestamp())
             .orderBy("created_at", Query.Direction.DESCENDING)
             .limit(limit)
             .get().await().documents.map { it.toNotification() }
@@ -47,6 +51,10 @@ class NotificationRepository(private val firestore: Firestore) {
         }
         firestore.deleteInBatches(refs)
     }
+
+    // expired_at 도입(TTL) 전에 저장된 알림에 created_at + 7일을 채운다 — RetentionBackfillJob 전용.
+    suspend fun backfillExpiredAt(limit: Int, apply: Boolean): ExpiryBackfillResult =
+        firestore.backfillExpiredAt(col, "created_at", Notification.RETENTION_PERIOD, limit, apply)
 
     suspend fun markRead(notificationId: String, userId: String): Notification? {
         val doc = col.document(notificationId).get().await()
@@ -76,5 +84,6 @@ class NotificationRepository(private val firestore: Firestore) {
         "fall" to fall,
         "is_read" to isRead,
         "created_at" to createdAt.toTimestamp(),
+        "expired_at" to expiredAt.toTimestamp(),
     )
 }
