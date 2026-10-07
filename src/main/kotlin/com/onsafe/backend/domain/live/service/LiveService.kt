@@ -26,12 +26,13 @@ import java.time.ZoneId
  * 보호자 실시간 영상(LIVE) — 요청형 세션(V2). 피보호자 1명당 세션 1개, 최대 [SESSION_DURATION](V3).
  *
  * - 시작: 연결된 보호자 + 피보호자 영상 동의(W1) + (새 세션이면) 피보호자 카메라 온라인(heartbeat, W7)일 때만.
- *   진행 중이면 같은 세션에 들어가며 만료를 지금+5분으로 연장한다
- *   (앱의 "연장" 버튼도 같은 호출). 연장은 시작 요청 rate limit으로 상한을 둔다.
+ *   진행 중이면 같은 세션에 들어가며 만료를 지금+5분으로 연장한다 — 보호자 앱은 화면이 열려 있는 동안
+ *   약 4분마다 이 호출로 **자동 연장**한다. 그래서 rate limit·열람 기록은 **새 세션에만** 적용한다
+ *   (연장까지 세면 자동 연장이 시간당 한도에 걸려 시청이 끊기고, 기록이 4분마다 쌓인다).
  * - 송출 요청: 세션을 **새로 만들 때만** 피보호자 기기에 FCM data 메시지(`event=live_request`)를 보낸다 — 연장 땐 이미 송출 중이다.
  *   메시지엔 토큰을 싣지 않는다(기기 알림 로그 등에 남지 않게). 앱은 받으면 송출 토큰을 따로 요청한다.
  * - 송출 토큰: 진행 중 세션이 있을 때만 피보호자에게 발급.
- * - 열람 기록: 시작·종료를 보안 이벤트로 남긴다(보호자 명의, 대상 = 피보호자).
+ * - 열람 기록: 새 세션 시작·보호자 종료를 보안 이벤트로 남긴다(보호자 명의, 대상 = 피보호자). 둘 사이가 시청 시간.
  */
 @Service
 class LiveService(
@@ -55,20 +56,26 @@ class LiveService(
 
     suspend fun startSession(guardianUserId: String, elderUserId: String, now: Instant = Instant.now()): LiveTokenResponse {
         requireLinked(guardianUserId, elderUserId)
-        rateLimiter.requireAllowed("rl:live-start:$guardianUserId", limit = START_LIMIT_PER_HOUR, windowSec = 3600)
+        // 동의는 연장 때도 확인한다 — 철회했으면 더 이어 보면 안 된다.
         requireLiveVideoEnabled(elderUserId)
 
         val existing = liveSessionRepository.find(elderUserId)
-        // 새 세션만 확인한다 — 연장은 이미 송출 중이라는 뜻이다.
-        if (existing == null) requireDeviceOnline(elderUserId, now)
+        val isNew = existing == null
+        // 새 세션만 횟수를 세고 기기를 확인한다 — 연장(자동 포함)은 이미 송출 중이라는 뜻이다.
+        if (isNew) {
+            rateLimiter.requireAllowed("rl:live-start:$guardianUserId", limit = START_LIMIT_PER_HOUR, windowSec = 3600)
+            requireDeviceOnline(elderUserId, now)
+        }
         val session = LiveSession(
             elderUserId = elderUserId,
             startedBy = existing?.startedBy ?: guardianUserId,
             expiresAt = now.plus(SESSION_DURATION),
         )
         liveSessionRepository.save(session, now)
-        recordEvent(guardianUserId, elderUserId, SecurityEventType.LIVE_VIEW_START)
-        val delivered = if (existing == null) requestPublish(session) else null
+        val delivered = if (isNew) {
+            recordEvent(guardianUserId, elderUserId, SecurityEventType.LIVE_VIEW_START)
+            requestPublish(session)
+        } else null
 
         return response(elderUserId, tokenIssuer.viewerToken(elderUserId, guardianUserId, SESSION_DURATION), session.expiresAt)
             .copy(requestDelivered = delivered)
