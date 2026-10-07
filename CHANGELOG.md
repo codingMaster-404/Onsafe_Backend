@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased] - feat/live-video-back (2026-10-07)
+
+### 보호자 실시간 영상(LIVE) — LiveKit Cloud, 요청형 (API 스펙 v4.16)
+
+**변경 파일:** `build.gradle.kts`, `application.yml`, `deploy-cloudrun.yml`, `ErrorCode.kt`, `common/livekit/LiveKitTokenIssuer.kt`·`LiveKitRoomService.kt`(신규), `domain/live/**`(신규 — `LiveController`·`LiveService`·`LiveSessionTerminator`·`LiveSweepJob`·`LiveSessionRepository`·`LiveSession`·`LiveTokenResponse`), `UserSettings.kt`·`SettingsRepository.kt`·`SettingsService.kt`·`SettingsController.kt`·`SettingsResponse.kt`·`LiveVideoSettingsRequest.kt`(신규), `GuardianService.kt`·`GuardianController.kt`·`ApprovePairingRequest.kt`(신규), `NotificationService.kt`, `UserService.kt`, `InternalJobController.kt`, `HeartbeatWatchdogJob.kt`, `SecurityEventType.kt`, `LoginHistory.kt`·`LoginHistoryRepository.kt`, `v4.0_onsafe_api_spec.md`
+
+#### Added
+- **LiveKit 서버 SDK `io.livekit:livekit-server:0.9.2`** — 0.10+는 protobuf 4.x, 0.11+는 Kotlin 2.3 메타데이터라 이 프로젝트(Kotlin 2.1.20, Firebase/gRPC protobuf 3.25)와 충돌(0.16.0 컴파일 실패 확인) → 호환되는 마지막 버전 고정
+- **세션 API**: `POST /api/live/{elder}/session`(시작·연장 5분), `DELETE …/session`, `POST /api/live/me/publish-token` — 보호자 구독 전용·피보호자 송출 전용 토큰, Redis `live:session:{elder}`(TTL = 만료), 시작 rate limit 시간당 20회
+- **피보호자 영상 동의**: `settings.live_video_enabled`(기본 false)·동의/철회 시각, `GET·PUT /api/settings/live-video/{user_id}`, 페어링 승인 본문 `live_video_enabled`
+- **송출 요청 FCM**: `NotificationService.sendDataMessage`(data 전용·HIGH·TTL, 알림함 미저장) → 새 세션에 `live_request`, 응답 `request_delivered`
+- **강제 종료**: `LiveSessionTerminator`(세션+LiveKit 방 삭제, 예외 없음) — 보호자 종료·연결 해제·재페어링으로 밀려남·탈퇴·동의 철회에서 호출
+- **만료 정리 잡** `POST /internal/jobs/live-sweep` + Cloud Scheduler 1분 등록
+- **열람 기록** `SecurityEventType.LIVE_VIEW_START`·`LIVE_VIEW_END`, `LoginHistory.targetUserId`(`target_user_id`)
+- 에러 `LIVE_UNAVAILABLE`(503)·`LIVE_NOT_ALLOWED`(403)·`LIVE_SESSION_NOT_FOUND`(404)·`LIVE_DEVICE_OFFLINE`(409)
+
+#### Changed
+- `NotificationService`: 만료 토큰 정리를 `cleanUpFailedTokens`로 추출(동작 동일)
+- `HeartbeatWatchdogJob.OFFLINE_THRESHOLD`(6분) 공개 — LIVE 시작 전 카메라 온라인 확인에 같은 기준 사용
+- `GuardianService.unpair`: 어느 방향 링크가 지워졌는지로 피보호자를 판별(LIVE 종료용)
+
+#### Deployment (주의)
+- **Secret Manager에 `LIVEKIT_API_KEY`·`LIVEKIT_API_SECRET`을 먼저 만들 것** — `--set-secrets`가 없는 시크릿을 참조하면 **Kotlin 배포 전체가 실패**한다(키 발급 전이면 임시 값). 런타임 SA `onsafe-cloudrun`에 두 시크릿 `secretAccessor` 부여, 저장소 변수 `LIVEKIT_URL`(`wss://…livekit.cloud`) 등록
+- Cloud Scheduler 잡 1개 추가(`onsafe-live-sweep`, 1분) — 무료 3개 초과분 과금
+- `/internal/jobs/live-sweep` 추가 — 다른 내부 잡처럼 `X-Internal-Auth` 헤더 인증만, 인프라 IP 제한 없음
+- 프론트 선행: 보호자 화면 조회 대상을 연결된 피보호자로(현재 본인 ID) — 없으면 LIVE·점수·이력 모두 피보호자 것을 못 봄
+- PR #19(보관 기간)와 `deploy-cloudrun.yml`(`--set-env-vars`·`register` 블록)·`CHANGELOG.md`·API 스펙 변경 이력이 겹친다 — 머지 시 양쪽 줄 모두 유지
+
+---
+
 ## [Unreleased] - feat/ses-replacement-back (2026-09-30)
 
 ### 메일 인증(AWS SES) 제거 · 비밀번호 재설정 본인확인 방식 전환 (API 스펙 v4.14)
