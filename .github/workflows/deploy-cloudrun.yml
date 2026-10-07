@@ -73,6 +73,9 @@ jobs:
           docker push "$IMAGE_URI:latest"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
+      # LIVE(실시간 영상): LIVEKIT_URL은 저장소 변수, 키·시크릿은 Secret Manager(LIVEKIT_API_KEY·LIVEKIT_API_SECRET).
+      # --set-secrets에 적은 시크릿이 Secret Manager에 없으면 배포 자체가 실패하므로 첫 배포 전에 두 시크릿을 만들어 둔다
+      # (LiveKit 키 발급 전이면 임시 값이라도 — 앱은 키가 비거나 틀리면 LIVE만 거절하고 나머지는 정상).
       - name: Deploy Kotlin API to Cloud Run
         id: deploy
         run: |
@@ -90,8 +93,8 @@ jobs:
             --min-instances 0 \
             --max-instances 10 \
             --timeout 300 \
-            --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379" \
-            --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest" \
+            --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379,LIVEKIT_URL=${{ vars.LIVEKIT_URL }}" \
+            --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest,LIVEKIT_API_KEY=LIVEKIT_API_KEY:latest,LIVEKIT_API_SECRET=LIVEKIT_API_SECRET:latest" \
             --quiet
 
           URL=$(gcloud run services describe ${{ env.KOTLIN_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
@@ -134,6 +137,7 @@ jobs:
           register "login-history-cleanup" "0 3 * * *"
           register "heartbeat-watchdog"    "*/5 * * * *"
           register "deletion-retry"        "0 * * * *"
+          register "live-sweep"            "* * * * *"
 
   # ────────────────────────────────────────────────────────────────────────────
   # 2. Python AI 배포 (internal only, Kotlin URL 을 env로 주입)
