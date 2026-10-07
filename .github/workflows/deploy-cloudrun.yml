@@ -73,6 +73,8 @@ jobs:
           docker push "$IMAGE_URI:latest"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
+      # --set-env-vars는 배포마다 환경변수 전체를 교체한다 — 콘솔에서 바꾼 값은 다음 배포에서 사라지므로
+      # 운영 스위치(RETENTION_BACKFILL_ENABLED·CONSENT_ENFORCEMENT_ENABLED)는 GitHub 저장소 변수로 관리한다(미등록이면 false).
       - name: Deploy Kotlin API to Cloud Run
         id: deploy
         run: |
@@ -90,7 +92,7 @@ jobs:
             --min-instances 0 \
             --max-instances 10 \
             --timeout 300 \
-            --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379" \
+            --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379,RETENTION_BACKFILL_ENABLED=${{ vars.RETENTION_BACKFILL_ENABLED || 'false' }},CONSENT_ENFORCEMENT_ENABLED=${{ vars.CONSENT_ENFORCEMENT_ENABLED || 'false' }}" \
             --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest" \
             --quiet
 
@@ -106,6 +108,30 @@ jobs:
           npx --yes firebase-tools deploy --only firestore:indexes \
             --project "${{ vars.GCP_PROJECT_ID }}" \
             --non-interactive || echo "인덱스 적용 실패 — 배포는 계속 진행(수동 확인 필요)"
+
+      # 보관 기간 강제(낙상 30일·알림 7일): 저장 시 기록하는 expired_at(Timestamp)에 TTL 정책을 건다.
+      # TTL 삭제는 만료 후 최대 24시간 늦을 수 있어 조회 쿼리에서도 기간 필터를 함께 건다(Repository).
+      # 정책 생성은 수 분 이상 걸려 --async로 배포를 막지 않는다. 인프라는 CI/CD로만 구성하므로 여기서 적용한다.
+      - name: Apply Firestore TTL policies
+        run: |
+          for group in fall_logs notifications; do
+            gcloud firestore fields ttls update expired_at \
+              --collection-group="${group}" \
+              --enable-ttl \
+              --async \
+              --project="${{ vars.GCP_PROJECT_ID }}" \
+              --quiet \
+            || echo "::warning::TTL 정책 적용 실패(${group}) — 배포는 계속 진행(수동 확인 필요)"
+          done
+
+      # Firestore TTL은 GCS 객체를 지우지 않으므로 낙상 영상(fall-videos/)은 버킷 lifecycle로 같은 30일에 지운다.
+      # --lifecycle-file은 버킷의 기존 규칙 전체를 이 파일로 교체한다.
+      - name: Apply GCS lifecycle
+        run: |
+          gcloud storage buckets update "gs://${{ vars.FIREBASE_STORAGE_BUCKET }}" \
+            --lifecycle-file=gcs-lifecycle.json \
+            --quiet \
+          || echo "::warning::GCS lifecycle 적용 실패 — 배포는 계속 진행(수동 확인 필요)"
 
       # 잡 엔드포인트는 있는데 트리거가 어디에도 등록돼 있지 않았다(C12) — 로그인 이력 정리와
       # 카메라 오프라인 워치독이 운영에서 실행되지 않는 상태였다. 인프라는 CI/CD로만 구성하므로
@@ -134,6 +160,7 @@ jobs:
           register "login-history-cleanup" "0 3 * * *"
           register "heartbeat-watchdog"    "*/5 * * * *"
           register "deletion-retry"        "0 * * * *"
+          register "retention-backfill"    "30 3 * * *"
 
   # ────────────────────────────────────────────────────────────────────────────
   # 2. Python AI 배포 (internal only, Kotlin URL 을 env로 주입)

@@ -1,13 +1,11 @@
 {
-  "lifecycle": {
-    "rule": [
-      {
-        "action": { "type": "Delete" },
-        "condition": {
-          "age": 180,
-          "matchesPrefix": ["fall-videos/"]
-        }
+  "rule": [
+    {
+      "action": { "type": "Delete" },
+      "condition": {
+        "age": 30,
+        "matchesPrefix": ["fall-videos/"]
       }
-    ]
-  }
+    }
+  ]
 }
