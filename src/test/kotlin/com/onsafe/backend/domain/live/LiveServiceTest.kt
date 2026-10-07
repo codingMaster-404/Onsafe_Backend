@@ -378,4 +378,55 @@ class LiveServiceTest {
         val ttl = Duration.between(issuedAround, claims.expiration.toInstant())
         assertTrue(ttl <= Duration.ofSeconds(121) && ttl >= Duration.ofSeconds(115), "ttl=$ttl")
     }
+
+    // ── 자동 연장 (5-E) ─────────────────────────────────────
+
+    @Test
+    fun `연장 - rate limit을 세지 않고 열람 기록도 남기지 않는다 (자동 연장)`() = runTest {
+        givenLinked(); givenAllowed(); givenLiveVideoEnabled(true)
+        coEvery { liveSessionRepository.find(elder) } returns LiveSession(elder, guardian, now.plusSeconds(60))
+        coEvery { liveSessionRepository.save(any(), now) } just runs
+
+        service.startSession(guardian, elder, now)
+
+        coVerify(exactly = 0) { rateLimiter.requireAllowed(any(), any(), any()) }
+        coVerify(exactly = 0) { loginHistoryRepository.save(any()) }
+    }
+
+    @Test
+    fun `연장 - 시간당 한도를 넘긴 상태여도 진행 중 세션은 이어진다`() = runTest {
+        givenLinked(); givenLiveVideoEnabled(true)
+        coEvery { rateLimiter.requireAllowed(any(), any(), any()) } throws
+            BusinessException(ErrorCode.TOO_MANY_REQUESTS)
+        coEvery { liveSessionRepository.find(elder) } returns LiveSession(elder, guardian, now.plusSeconds(60))
+        coEvery { liveSessionRepository.save(any(), now) } just runs
+
+        val result = service.startSession(guardian, elder, now)
+
+        assertEquals(now.plus(Duration.ofMinutes(5)), result.expiresAt.atZone(java.time.ZoneId.systemDefault()).toInstant())
+    }
+
+    @Test
+    fun `연장 - 그사이 동의를 철회했으면 연장도 LIVE_NOT_ALLOWED`() = runTest {
+        givenLinked(); givenAllowed(); givenLiveVideoEnabled(false)
+        coEvery { liveSessionRepository.find(elder) } returns LiveSession(elder, guardian, now.plusSeconds(60))
+
+        val e = assertThrows<BusinessException> { service.startSession(guardian, elder, now) }
+
+        assertEquals(ErrorCode.LIVE_NOT_ALLOWED, e.errorCode)
+        coVerify(exactly = 0) { liveSessionRepository.save(any(), any()) }
+    }
+
+    @Test
+    fun `새 세션 - 시간당 한도를 넘기면 TOO_MANY_REQUESTS이고 세션을 만들지 않는다`() = runTest {
+        givenLinked(); givenLiveVideoEnabled(true)
+        coEvery { rateLimiter.requireAllowed(any(), any(), any()) } throws
+            BusinessException(ErrorCode.TOO_MANY_REQUESTS)
+        coEvery { liveSessionRepository.find(elder) } returns null
+
+        val e = assertThrows<BusinessException> { service.startSession(guardian, elder, now) }
+
+        assertEquals(ErrorCode.TOO_MANY_REQUESTS, e.errorCode)
+        coVerify(exactly = 0) { liveSessionRepository.save(any(), any()) }
+    }
 }
