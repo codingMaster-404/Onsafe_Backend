@@ -8,12 +8,12 @@
 
 #### Added
 - **LiveKit 서버 SDK `io.livekit:livekit-server:0.9.2`** — 0.10+는 protobuf 4.x, 0.11+는 Kotlin 2.3 메타데이터라 이 프로젝트(Kotlin 2.1.20, Firebase/gRPC protobuf 3.25)와 충돌(0.16.0 컴파일 실패 확인) → 호환되는 마지막 버전 고정
-- **세션 API**: `POST /api/live/{elder}/session`(시작·연장 5분), `DELETE …/session`, `POST /api/live/me/publish-token` — 보호자 구독 전용·피보호자 송출 전용 토큰, Redis `live:session:{elder}`(TTL = 만료), 시작 rate limit 시간당 20회
+- **세션 API**: `POST /api/live/{elder}/session`(시작·연장 5분), `DELETE …/session`, `POST /api/live/me/publish-token` — 보호자 구독 전용·피보호자 송출 전용 토큰, Redis `live:session:{elder}`(TTL = 만료), **새 세션** 시작 rate limit 시간당 20회 — 보호자 앱의 자동 연장(약 4분마다 같은 POST)은 횟수·열람 기록에서 제외
 - **피보호자 영상 동의**: `settings.live_video_enabled`(기본 false)·동의/철회 시각, `GET·PUT /api/settings/live-video/{user_id}`, 페어링 승인 본문 `live_video_enabled`
 - **송출 요청 FCM**: `NotificationService.sendDataMessage`(data 전용·HIGH·TTL, 알림함 미저장) → 새 세션에 `live_request`, 응답 `request_delivered`
 - **강제 종료**: `LiveSessionTerminator`(세션+LiveKit 방 삭제, 예외 없음) — 보호자 종료·연결 해제·재페어링으로 밀려남·탈퇴·동의 철회에서 호출
 - **만료 정리 잡** `POST /internal/jobs/live-sweep` + Cloud Scheduler 1분 등록
-- **열람 기록** `SecurityEventType.LIVE_VIEW_START`·`LIVE_VIEW_END`, `LoginHistory.targetUserId`(`target_user_id`)
+- **열람 기록** `SecurityEventType.LIVE_VIEW_START`(새 세션만)·`LIVE_VIEW_END`(보호자 종료), `LoginHistory.targetUserId`(`target_user_id`)
 - 에러 `LIVE_UNAVAILABLE`(503)·`LIVE_NOT_ALLOWED`(403)·`LIVE_SESSION_NOT_FOUND`(404)·`LIVE_DEVICE_OFFLINE`(409)
 
 #### Changed
