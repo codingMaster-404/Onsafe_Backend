@@ -40,6 +40,12 @@ encryption:
 consent:
   enforcement-enabled: ${CONSENT_ENFORCEMENT_ENABLED:false}
 
+# 보관 기간 백필(RetentionBackfillJob) — expired_at 도입 전 낙상 로그·알림에 만료 시각을 채운다.
+# false면 건수만 로그로 남긴다. true로 켜면 30일·7일 지난 문서가 Firestore TTL로 24시간 안에 일괄 삭제된다 —
+# 운영 로그로 건수를 확인한 뒤 켠다.
+retention:
+  backfill-enabled: ${RETENTION_BACKFILL_ENABLED:false}
+
 springdoc:
   swagger-ui:
     path: /swagger-ui.html

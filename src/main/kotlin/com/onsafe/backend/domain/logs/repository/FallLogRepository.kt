@@ -4,7 +4,9 @@ import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.google.cloud.firestore.Query
 import com.onsafe.backend.common.security.EncryptionService
+import com.onsafe.backend.common.util.ExpiryBackfillResult
 import com.onsafe.backend.common.util.await
+import com.onsafe.backend.common.util.backfillExpiredAt
 import com.onsafe.backend.common.util.toLocalDateTime
 import com.onsafe.backend.common.util.toTimestamp
 import com.onsafe.backend.domain.camera.model.entity.RiskLevel
@@ -21,21 +23,27 @@ class FallLogRepository(
 
     private val col get() = firestore.collection("fall_logs")
 
-    // since != null 이면 timestamp 하한 필터 — 재페어링 시 새 보호자에게 이전 이력 노출 방지용.
-    // 본인 호출(AccessGuard.Grant.Owner) 은 since=null 로, 보호자 호출은 link.createdAt 을 넘긴다.
+    // 조회 하한 = 보관 기간(30일) 시작과 since 중 늦은 쪽. Firestore TTL 은 만료 후 최대 24시간 늦게 지우므로
+    // 지워지기 전 문서도 여기서 걸러 앱 안내("최대 30일 보관")와 맞춘다.
+    // since 는 재페어링 시 새 보호자에게 이전 이력 노출 방지용 — 본인 호출(AccessGuard.Grant.Owner)은 null, 보호자 호출은 link.createdAt.
+    private fun visibleFrom(since: LocalDateTime?): LocalDateTime {
+        val retentionStart = LocalDateTime.now().minus(FallLog.RETENTION_PERIOD)
+        return if (since != null && since > retentionStart) since else retentionStart
+    }
+
     suspend fun findRecentByUserId(userId: String, level: String? = null, since: LocalDateTime? = null): List<FallLog> {
-        var query = col.whereEqualTo("user_id", userId) as Query
-        if (since != null) query = query.whereGreaterThanOrEqualTo("timestamp", since.toTimestamp())
-        val all = query.orderBy("timestamp", Query.Direction.DESCENDING)
+        val all = col.whereEqualTo("user_id", userId)
+            .whereGreaterThanOrEqualTo("timestamp", visibleFrom(since).toTimestamp())
+            .orderBy("timestamp", Query.Direction.DESCENDING)
             .limit(100)
             .get().await().documents.map { it.toFallLog() }
         return if (level != null) all.filter { it.matchesLevel(level) } else all
     }
 
     suspend fun countByUserId(userId: String, since: LocalDateTime? = null): Map<String, Int> {
-        var query = col.whereEqualTo("user_id", userId) as Query
-        if (since != null) query = query.whereGreaterThanOrEqualTo("timestamp", since.toTimestamp())
-        val all = query.orderBy("timestamp", Query.Direction.DESCENDING)
+        val all = col.whereEqualTo("user_id", userId)
+            .whereGreaterThanOrEqualTo("timestamp", visibleFrom(since).toTimestamp())
+            .orderBy("timestamp", Query.Direction.DESCENDING)
             .limit(100)
             .get().await().documents.map { it.toFallLog() }
         return mapOf(
@@ -51,8 +59,8 @@ class FallLogRepository(
         else   -> true
     }
 
-    // 단건 조회 시에도 since 필터 적용 — 컨트롤러가 URL 로 직접 logId 를 넣어 지난 이력에 접근하려는
-    // 우회를 봉쇄. since 이전 이벤트는 존재해도 조회 결과가 null 로 나와 컨트롤러가 LOG_NOT_FOUND 반환.
+    // 단건 조회 시에도 같은 하한 적용 — 컨트롤러가 URL 로 직접 logId 를 넣어 지난 이력에 접근하려는
+    // 우회를 봉쇄. 하한 이전 이벤트는 존재해도 조회 결과가 null 로 나와 컨트롤러가 LOG_NOT_FOUND 반환.
     suspend fun findByLogIdAndUserId(logId: String, userId: String, since: LocalDateTime? = null): FallLog? =
         getDocIfOwned(logId, userId, since)?.toFallLog()
 
@@ -133,13 +141,16 @@ class FallLogRepository(
     suspend fun findLogIdsByUserId(userId: String): List<String> =
         col.whereEqualTo("user_id", userId).get().await().documents.map { it.id }
 
+    // expired_at 도입(TTL) 전에 저장된 로그에 timestamp + 30일을 채운다 — RetentionBackfillJob 전용.
+    suspend fun backfillExpiredAt(limit: Int, apply: Boolean): ExpiryBackfillResult =
+        firestore.backfillExpiredAt(col, "timestamp", FallLog.RETENTION_PERIOD, limit, apply)
+
+    // 단건 경로(조회·확인·영상 URL·업로드·삭제) 공통 — 보관 기간이 지난 로그는 TTL 삭제 전이라도 어떤 경로로도 다루지 않는다(R6).
     private suspend fun getDocIfOwned(logId: String, userId: String, since: LocalDateTime? = null): DocumentSnapshot? {
         val doc = col.document(logId).get().await()
         if (!doc.exists() || doc.getString("user_id") != userId) return null
-        if (since != null) {
-            val ts = doc.getTimestamp("timestamp")?.toLocalDateTime() ?: return null
-            if (ts < since) return null
-        }
+        val ts = doc.getTimestamp("timestamp")?.toLocalDateTime() ?: return null
+        if (ts < visibleFrom(since)) return null
         return doc
     }
 
@@ -163,6 +174,7 @@ class FallLogRepository(
         "is_confirmed" to isConfirmed,
         "video_url" to videoUrl?.let { encryptionService.encrypt(it) },
         "last_reminder_at" to lastReminderAt?.toTimestamp(),
-        "timestamp" to timestamp.toTimestamp()
+        "timestamp" to timestamp.toTimestamp(),
+        "expired_at" to expiredAt.toTimestamp()
     )
 }
