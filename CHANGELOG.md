@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased] - feat/data-retention-back (2026-10-01)
+
+### 보관 기간 강제 — 낙상 로그·영상 30일, 알림 7일 (API 스펙 v4.15)
+
+**변경 파일:** `FallLog.kt`, `Notification.kt`, `FallLogRepository.kt`, `NotificationRepository.kt`, `FirestoreExt.kt`, `RetentionBackfillJob.kt`(신규), `InternalJobController.kt`, `application.yml`, `deploy-cloudrun.yml`, `gcs-lifecycle.json`
+
+#### Added
+- **`expired_at` 기록**: `fall_logs`(`timestamp` + 30일)·`notifications`(`created_at` + 7일) 저장 시 Firestore TTL 대상 필드를 함께 쓴다. 기간 상수는 `FallLog.RETENTION_PERIOD`·`Notification.RETENTION_PERIOD`
+- **배포 워크플로 단계 2개**: `Apply Firestore TTL policies`(`gcloud firestore fields ttls update expired_at --enable-ttl`, 두 컬렉션 그룹) · `Apply GCS lifecycle`(`gcs-lifecycle.json`). 실패해도 배포는 계속하고 `::warning::` 경고를 남긴다
+- **`POST /internal/jobs/retention-backfill`** + `RetentionBackfillJob` + Cloud Scheduler 등록(매일 03:30): 필드 도입 전 문서에 `expired_at`을 채운다. 공통 헬퍼 `Firestore.backfillExpiredAt`(문서 ID 순 페이지 스캔, 실행당 컬렉션별 1000건)
+- **스위치 `RETENTION_BACKFILL_ENABLED`**(기본 false — 건수만 로그): GitHub 저장소 변수로 관리해 `--set-env-vars`에 주입한다(콘솔에서 바꾼 값은 다음 배포에서 사라지므로)
+- **재동의 차단 스위치 `CONSENT_ENFORCEMENT_ENABLED`도 같은 방식으로 주입**(v4.13 스위치, 미등록 false — 현재 동작 그대로): 그동안 워크플로에 없어 콘솔에서 켜도 다음 배포에서 꺼지던 문제. 켜기는 저장소 변수 `true` 등록 후 재배포, 프론트 재동의 창 배포 이후
+
+#### Changed
+- **낙상 로그 조회 30일 하한**: 목록·건수는 최근 30일(보호자는 연결 시각과 30일 중 늦은 쪽부터), 단건·확인·영상 URL·업로드 URL·업로드 완료·삭제는 30일 지난 로그에 `LOG_NOT_FOUND` — `getDocIfOwned` 한 곳에서 처리. TTL 삭제 지연(최대 24시간) 보완
+- **알림 목록 7일 하한**: `GET /api/notifications/{user_id}`가 최근 7일만 반환(최신 50건 제한은 유지)
+- **`gcs-lifecycle.json`**: 보관 180일 → 30일, 최상위 형식 `{"lifecycle": {"rule": …}}` → `{"rule": …}`(`gcloud storage buckets update --lifecycle-file` 형식)
+
+#### Deployment (주의)
+- 배포 SA `onsafe-deployer`에 `datastore.indexes.update`(TTL)·`storage.buckets.update`(버킷 lifecycle) 권한 필요. 현재 배포 워크플로는 저장소 변수 미등록으로 인증 단계에서 실패 중 — 해결 전에는 TTL·lifecycle·스케줄이 운영에 적용되지 않는다
+- lifecycle은 적용 즉시 업로드 30일 지난 영상을 지운다 — 조회 필터와 **같은 배포**로 내보낼 것
+- 백필 스위치를 켜면 30일·7일 지난 낙상 로그·알림이 24시간 안에 일괄 삭제된다 — 꺼진 상태로 로그 건수를 먼저 확인
+
+---
+
 ## [Unreleased] - feat/ses-replacement-back (2026-09-30)
 
 ### 메일 인증(AWS SES) 제거 · 비밀번호 재설정 본인확인 방식 전환 (API 스펙 v4.14)

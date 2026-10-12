@@ -4,6 +4,7 @@ import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.common.security.InternalAuthGuard
 import com.onsafe.backend.domain.auth.service.LoginHistoryCleanupJob
 import com.onsafe.backend.domain.camera.service.HeartbeatWatchdogJob
+import com.onsafe.backend.domain.internal.service.RetentionBackfillJob
 import com.onsafe.backend.domain.user.service.DeletionRetryJob
 import io.swagger.v3.oas.annotations.Operation
 import org.springframework.web.bind.annotation.PostMapping
@@ -24,6 +25,7 @@ class InternalJobController(
     private val loginHistoryCleanupJob: LoginHistoryCleanupJob,
     private val heartbeatWatchdogJob: HeartbeatWatchdogJob,
     private val deletionRetryJob: DeletionRetryJob,
+    private val retentionBackfillJob: RetentionBackfillJob,
     private val internalAuthGuard: InternalAuthGuard
 ) {
 
@@ -55,5 +57,15 @@ class InternalJobController(
         internalAuthGuard.require(auth)
         deletionRetryJob.run()
         return ApiResponse.ok(message = "deletion retry triggered")
+    }
+
+    @Operation(summary = "보관 기간 백필 — 기존 낙상 로그·알림에 expired_at 기록 (Cloud Scheduler 트리거)", security = [])
+    @PostMapping("/retention-backfill")
+    suspend fun runRetentionBackfill(
+        @RequestHeader(value = "X-Internal-Auth", required = false) auth: String?
+    ): ApiResponse<Unit> {
+        internalAuthGuard.require(auth)
+        retentionBackfillJob.run()
+        return ApiResponse.ok(message = "retention backfill triggered")
     }
 }
