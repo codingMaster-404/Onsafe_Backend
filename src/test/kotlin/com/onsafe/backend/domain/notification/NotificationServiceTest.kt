@@ -26,6 +26,7 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -288,5 +289,47 @@ class NotificationServiceTest {
 
         // 조회 오류 하나로 알림이 전면 차단되면 안 된다.
         assertEquals("알림 전송 완료 (1/1)", result.message)
+    }
+
+    // ── data 전용 메시지 (실시간 영상 송출 요청) ─────────────────
+
+    @Test
+    fun `data 메시지 - 알림함에 저장하지 않고 알림 설정과 무관하게 보내며 성공 기기 수를 돌려준다`() = runTest {
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("camera")
+        coEvery { settingsRepository.findByUserId("testUser") } returns UserSettings("testUser", notificationEnabled = false)
+        stubMulticast(true)
+
+        val delivered = notificationService.sendDataMessage(
+            "testUser", mapOf("event" to "live_request"), java.time.Duration.ofMinutes(5)
+        )
+
+        assertEquals(1, delivered)
+        coVerify(exactly = 0) { notificationRepository.save(any()) }
+        coVerify(exactly = 0) { settingsRepository.findByUserId(any()) }
+    }
+
+    @Test
+    fun `data 메시지 - 만료된 토큰은 sendNotification과 같이 지운다`() = runTest {
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("camera", "old")
+        stubMulticast(true, false)
+
+        val delivered = notificationService.sendDataMessage(
+            "testUser", mapOf("event" to "live_request"), java.time.Duration.ofMinutes(5)
+        )
+
+        assertEquals(1, delivered)
+        coVerify(exactly = 1) { fcmTokenRepository.deleteByToken("testUser", "token-old") }
+    }
+
+    @Test
+    fun `data 메시지 - 토큰이 없으면 보내지 않고 0`() = runTest {
+        coEvery { fcmTokenRepository.findAll("testUser") } returns emptyList()
+
+        val delivered = notificationService.sendDataMessage(
+            "testUser", mapOf("event" to "live_request"), java.time.Duration.ofMinutes(5)
+        )
+
+        assertEquals(0, delivered)
+        verify(exactly = 0) { FirebaseMessaging.getInstance() }
     }
 }

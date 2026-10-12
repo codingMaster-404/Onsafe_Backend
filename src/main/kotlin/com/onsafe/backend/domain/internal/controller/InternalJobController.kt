@@ -5,6 +5,7 @@ import com.onsafe.backend.common.security.InternalAuthGuard
 import com.onsafe.backend.domain.auth.service.LoginHistoryCleanupJob
 import com.onsafe.backend.domain.camera.service.HeartbeatWatchdogJob
 import com.onsafe.backend.domain.internal.service.RetentionBackfillJob
+import com.onsafe.backend.domain.live.service.LiveSweepJob
 import com.onsafe.backend.domain.user.service.DeletionRetryJob
 import io.swagger.v3.oas.annotations.Operation
 import org.springframework.web.bind.annotation.PostMapping
@@ -26,6 +27,7 @@ class InternalJobController(
     private val heartbeatWatchdogJob: HeartbeatWatchdogJob,
     private val deletionRetryJob: DeletionRetryJob,
     private val retentionBackfillJob: RetentionBackfillJob,
+    private val liveSweepJob: LiveSweepJob,
     private val internalAuthGuard: InternalAuthGuard
 ) {
 
@@ -67,5 +69,15 @@ class InternalJobController(
         internalAuthGuard.require(auth)
         retentionBackfillJob.run()
         return ApiResponse.ok(message = "retention backfill triggered")
+    }
+
+    @Operation(summary = "만료된 실시간 영상(LIVE) 방 정리 (Cloud Scheduler 1분 주기)", security = [])
+    @PostMapping("/live-sweep")
+    suspend fun runLiveSweep(
+        @RequestHeader(value = "X-Internal-Auth", required = false) auth: String?
+    ): ApiResponse<Unit> {
+        internalAuthGuard.require(auth)
+        liveSweepJob.run()
+        return ApiResponse.ok(message = "live sweep triggered")
     }
 }

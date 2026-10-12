@@ -12,6 +12,7 @@ import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.common.ratelimit.RateLimiter
 import com.onsafe.backend.domain.auth.model.entity.LoginHistory
 import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
+import com.onsafe.backend.domain.live.service.LiveSessionTerminator
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.user.repository.DeletionTaskRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
@@ -57,6 +58,7 @@ class UserServiceTest {
     private val deletionTaskRepository: DeletionTaskRepository = mockk(relaxUnitFun = true)
     private val valueOps: ReactiveValueOperations<String, String> = mockk()
     private val consentRepository: ConsentRepository = mockk()
+    private val liveSessionTerminator: LiveSessionTerminator = mockk(relaxed = true)
     private val passwordEncoder = BCryptPasswordEncoder()
     private lateinit var userService: UserService
 
@@ -88,7 +90,8 @@ class UserServiceTest {
             fcmTokenRepository,
             rateLimiter,
             redis,
-            deletionTaskRepository
+            deletionTaskRepository,
+            liveSessionTerminator
         )
     }
 
@@ -210,6 +213,32 @@ class UserServiceTest {
         coVerify(exactly = 0) { deletionTaskRepository.delete(any()) }
     }
 
+    @Test
+    fun `회원 탈퇴 - 연결을 지우기 전에 본인과 연결된 피보호자의 실시간 영상을 끊는다 (W4)`() = runTest {
+        stubDeleteUser()
+        coEvery { guardianLinkRepository.findWardsOf("testUser") } returns
+            listOf(com.onsafe.backend.domain.guardian.model.entity.GuardianLink("testUser", "ward1"))
+
+        userService.deleteUser("testUser", "ticket-1")
+
+        coVerifyOrder {
+            liveSessionTerminator.terminate("testUser", "account_deleted")
+            liveSessionTerminator.terminate("ward1", "account_deleted")
+            guardianLinkRepository.deleteAllInvolving("testUser")
+        }
+    }
+
+    @Test
+    fun `회원 탈퇴 - 실시간 영상 대상 조회가 실패해도 본인 방은 끊고 파기를 계속한다`() = runTest {
+        stubDeleteUser()
+        coEvery { guardianLinkRepository.findWardsOf("testUser") } throws RuntimeException("firestore down")
+
+        userService.deleteUser("testUser", "ticket-1")
+
+        coVerify(exactly = 1) { liveSessionTerminator.terminate("testUser", "account_deleted") }
+        coVerify(exactly = 1) { deletionTaskRepository.delete("testUser") }
+    }
+
     // 탈퇴 성공 경로 공통 스텁 — 각 테스트는 필요한 지점만 덮어쓴다.
     private fun stubDeleteUser(logIds: List<String> = emptyList()) {
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
@@ -225,6 +254,7 @@ class UserServiceTest {
         coEvery { notificationRepository.deleteByUserId("testUser") } just Runs
         coEvery { notificationRepository.deleteByLogIds(any()) } just Runs
         coEvery { guardianLinkRepository.deleteAllInvolving("testUser") } just Runs
+        coEvery { guardianLinkRepository.findWardsOf("testUser") } returns emptyList()
         coEvery { consentRepository.deleteByUserId("testUser") } just Runs
         coEvery { userRepository.deleteEmailLookup(any()) } just Runs
         coEvery { userRepository.deletePhoneLookup(any()) } just Runs

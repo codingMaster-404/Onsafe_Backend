@@ -4,6 +4,8 @@ import com.google.cloud.firestore.DocumentReference
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
 import com.onsafe.backend.common.util.await
+import com.onsafe.backend.common.util.toLocalDateTime
+import com.onsafe.backend.common.util.toTimestamp
 import com.onsafe.backend.domain.settings.model.entity.UserSettings
 import org.springframework.stereotype.Repository
 
@@ -36,11 +38,17 @@ class SettingsRepository(private val firestore: Firestore) {
         notificationEnabled = getBoolean("notification_enabled") ?: true,
         soundEnabled = getBoolean("sound_enabled") ?: true,
         vibrationEnabled = getBoolean("vibration_enabled") ?: true,
+        liveVideoEnabled = getBoolean("live_video_enabled") ?: false,
+        liveVideoConsentedAt = getTimestamp("live_video_consented_at")?.toLocalDateTime(),
+        liveVideoWithdrawnAt = getTimestamp("live_video_withdrawn_at")?.toLocalDateTime(),
     )
 
     private fun UserSettings.toMap() = mapOf(
         "notification_enabled" to notificationEnabled,
         "sound_enabled" to soundEnabled,
         "vibration_enabled" to vibrationEnabled,
+        "live_video_enabled" to liveVideoEnabled,
+        "live_video_consented_at" to liveVideoConsentedAt?.toTimestamp(),
+        "live_video_withdrawn_at" to liveVideoWithdrawnAt?.toTimestamp(),
     )
 }

@@ -2,6 +2,7 @@ package com.onsafe.backend.domain.notification.service
 
 import com.google.firebase.messaging.AndroidConfig
 import com.google.firebase.messaging.AndroidNotification
+import com.google.firebase.messaging.BatchResponse
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingException
 import com.google.firebase.messaging.MessagingErrorCode
@@ -15,6 +16,7 @@ import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.notification.model.dto.NotificationLogResponse
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.model.dto.NotificationResponse
+import com.onsafe.backend.domain.notification.model.entity.FcmToken
 import com.onsafe.backend.domain.notification.model.entity.Notification
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
@@ -26,6 +28,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
+import java.time.Duration
 
 // 앱(PushNotifications.kt)이 만든 알림 채널 ID. 서버가 android.notification.channel_id로 실어
 // 보내야 백그라운드 알림에도 채널이 적용된다.
@@ -104,20 +107,7 @@ class NotificationService(
             throw BusinessException(ErrorCode.FCM_SEND_FAILED, e)
         }
 
-        // 토큰별 결과를 받아 만료된 기기만 정리한다 — 예전에는 필드가 하나뿐이라 실패 한 번에
-        // 그 계정의 유일한 토큰이 지워지고 재등록 전까지 전면 미수신이 됐다.
-        batch.responses.forEachIndexed { index, result ->
-            if (result.isSuccessful) return@forEachIndexed
-            val token = tokens[index]
-            val errorCode = (result.exception as? FirebaseMessagingException)?.messagingErrorCode
-            if (errorCode == MessagingErrorCode.UNREGISTERED) {
-                log.warn("FCM 토큰 만료로 삭제 (userId: ${request.userId}, deviceId: ${token.deviceId})")
-                runCatching { fcmTokenRepository.deleteByToken(request.userId, token.token) }
-                    .onFailure { e -> log.warn("만료 토큰 삭제 실패 (userId: ${request.userId}): ${e.message}") }
-            } else {
-                log.warn("FCM 전송 실패 (userId: ${request.userId}, deviceId: ${token.deviceId}): $errorCode")
-            }
-        }
+        cleanUpFailedTokens(request.userId, tokens, batch)
 
         if (batch.successCount == 0) throw BusinessException(ErrorCode.FCM_SEND_FAILED)
         val messageId = batch.responses.firstOrNull { it.isSuccessful }?.messageId ?: ""
@@ -126,6 +116,57 @@ class NotificationService(
             message = "알림 전송 완료 (${batch.successCount}/${tokens.size})",
             fcmMessageId = messageId
         )
+    }
+
+    /**
+     * 화면 알림 없이 앱에 신호만 보내는 data 전용 메시지 — 실시간 영상 송출 요청처럼 앱이 받아 동작만 하면 되는 신호용.
+     * [sendNotification]과 달리 알림함(notifications)에 저장하지 않고, 알림 설정(notification_enabled)과도 무관하다
+     * (영상 송출은 별도 동의 live_video_enabled로 이미 통제). 앱이 백그라운드여도 깨우도록 우선순위 HIGH,
+     * [ttl]이 지나면 FCM이 전달하지 않는다(늦게 도착한 요청 방지). 만료 토큰 정리는 [sendNotification]과 같다.
+     *
+     * @return 전달에 성공한 기기 수(토큰이 없으면 0). 발송 자체가 실패하면 [ErrorCode.FCM_SEND_FAILED].
+     */
+    suspend fun sendDataMessage(userId: String, data: Map<String, String>, ttl: Duration): Int {
+        val tokens = runCatching { fcmTokenRepository.findAll(userId) }
+            .onFailure { e -> log.warn("FCM 토큰 조회 실패 (userId: $userId): ${e.message}") }
+            .getOrDefault(emptyList())
+        if (tokens.isEmpty()) return 0
+
+        val message = MulticastMessage.builder()
+            .addAllTokens(tokens.map { it.token })
+            .putAllData(data)
+            .setAndroidConfig(
+                AndroidConfig.builder()
+                    .setPriority(AndroidConfig.Priority.HIGH)
+                    .setTtl(ttl.toMillis())
+                    .build()
+            )
+            .build()
+        val batch = try {
+            FirebaseMessaging.getInstance().sendEachForMulticastAsync(message).await()
+        } catch (e: Exception) {
+            log.warn("FCM data 메시지 전송 실패 (userId: $userId): ${e.message}")
+            throw BusinessException(ErrorCode.FCM_SEND_FAILED, e)
+        }
+        cleanUpFailedTokens(userId, tokens, batch)
+        return batch.successCount
+    }
+
+    // 토큰별 결과를 받아 만료된 기기만 정리한다 — 예전에는 필드가 하나뿐이라 실패 한 번에
+    // 그 계정의 유일한 토큰이 지워지고 재등록 전까지 전면 미수신이 됐다.
+    private suspend fun cleanUpFailedTokens(userId: String, tokens: List<FcmToken>, batch: BatchResponse) {
+        batch.responses.forEachIndexed { index, result ->
+            if (result.isSuccessful) return@forEachIndexed
+            val token = tokens[index]
+            val errorCode = (result.exception as? FirebaseMessagingException)?.messagingErrorCode
+            if (errorCode == MessagingErrorCode.UNREGISTERED) {
+                log.warn("FCM 토큰 만료로 삭제 (userId: $userId, deviceId: ${token.deviceId})")
+                runCatching { fcmTokenRepository.deleteByToken(userId, token.token) }
+                    .onFailure { e -> log.warn("만료 토큰 삭제 실패 (userId: $userId): ${e.message}") }
+            } else {
+                log.warn("FCM 전송 실패 (userId: $userId, deviceId: ${token.deviceId}): $errorCode")
+            }
+        }
     }
 
     // 앱이 만든 채널 ID와 반드시 같아야 한다(프론트 PushNotifications.CHANNEL_*).

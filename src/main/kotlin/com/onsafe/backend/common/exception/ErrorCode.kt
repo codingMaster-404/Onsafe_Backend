@@ -67,5 +67,14 @@ enum class ErrorCode(
     // ── 약관 동의 ─────────────────────────────────────────
     // 토큰은 유효하므로 401이 아니라 403 — 401이면 앱이 refresh를 시도하고, 같은 클레임의 토큰을 다시 받는다.
     CONSENT_REQUIRED(HttpStatus.FORBIDDEN, "개정된 필수 약관에 동의해야 서비스를 이용할 수 있습니다."),
-    CONSENT_VERSION_MISMATCH(HttpStatus.CONFLICT, "약관이 다시 개정되었습니다. 최신 약관을 확인한 뒤 다시 동의해주세요.")
+    CONSENT_VERSION_MISMATCH(HttpStatus.CONFLICT, "약관이 다시 개정되었습니다. 최신 약관을 확인한 뒤 다시 동의해주세요."),
+
+    // ── 실시간 영상(LIVE) ─────────────────────────────────
+    // LiveKit 설정 누락·토큰 생성 실패 — 다른 기능은 정상이므로 503으로 LIVE만 거절한다.
+    LIVE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "실시간 영상 서비스를 일시적으로 사용할 수 없습니다."),
+    // 피보호자가 영상 송출에 동의하지 않았다(설정 live_video_enabled=false) — 연결된 보호자여도 볼 수 없다.
+    LIVE_NOT_ALLOWED(HttpStatus.FORBIDDEN, "피보호자가 실시간 영상 송출에 동의하지 않았습니다."),
+    LIVE_SESSION_NOT_FOUND(HttpStatus.NOT_FOUND, "진행 중인 실시간 영상 요청이 없습니다."),
+    // 피보호자 카메라 heartbeat가 오프라인 기준(6분)보다 오래됐다 — 송출 요청을 보내도 받을 기기가 없다(W7).
+    LIVE_DEVICE_OFFLINE(HttpStatus.CONFLICT, "피보호자 카메라가 연결되어 있지 않습니다. 카메라 앱이 켜져 있는지 확인해주세요.")
 }

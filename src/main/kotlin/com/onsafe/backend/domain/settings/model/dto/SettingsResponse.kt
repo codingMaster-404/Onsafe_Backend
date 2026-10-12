@@ -20,6 +20,21 @@ data class NotificationSettingsResponse(
 
 data class RetentionSettingsResponse(val retentionDays: Int = 30)
 
+// 마케팅 동의와 같은 형식 — 현재 동의 여부와 마지막 동의·철회 시각.
+data class LiveVideoSettingsResponse(
+    val enabled: Boolean,
+    val consentedAt: LocalDateTime?,
+    val withdrawnAt: LocalDateTime?,
+) {
+    companion object {
+        fun from(s: UserSettings) = LiveVideoSettingsResponse(
+            enabled = s.liveVideoEnabled,
+            consentedAt = s.liveVideoConsentedAt,
+            withdrawnAt = s.liveVideoWithdrawnAt,
+        )
+    }
+}
+
 // 필드명은 API 스펙(`consented_at`)을 따른다 — 이전 이름 consentAt은 `consent_at`으로 직렬화돼
 // 스펙대로 구현한 앱이 동의 시각을 항상 null로 받았다(C3). withdrawn_at은 스펙 외 추가 필드다.
 data class MarketingConsentResponse(

@@ -4,6 +4,7 @@ import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.common.util.ClientIpResolver
+import com.onsafe.backend.domain.guardian.model.dto.ApprovePairingRequest
 import com.onsafe.backend.domain.guardian.model.dto.GuardianResponse
 import com.onsafe.backend.domain.guardian.model.dto.PairRequest
 import com.onsafe.backend.domain.guardian.model.dto.PairingCodeResponse
@@ -66,10 +67,14 @@ class GuardianController(
     suspend fun approvePairingRequest(
         @PathVariable userId: String,
         @PathVariable requestId: String,
+        @RequestBody(required = false) request: ApprovePairingRequest?,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<WardResponse> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
-        return ApiResponse.ok(guardianService.approvePairingRequest(userId, requestId), "보호자 연결이 완료되었습니다.")
+        return ApiResponse.ok(
+            guardianService.approvePairingRequest(userId, requestId, request?.liveVideoEnabled),
+            "보호자 연결이 완료되었습니다."
+        )
     }
 
     @Operation(
