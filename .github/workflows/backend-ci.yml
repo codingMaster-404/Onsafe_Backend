@@ -35,7 +35,11 @@ jobs:
       - name: Run Python tests
         run: |
           pip install pytest pytest-asyncio
-          pytest app/ -v --tb=short 2>/dev/null || echo "테스트 파일 없음 — 통과"
+          if find app -name 'test_*.py' -o -name '*_test.py' | grep -q .; then
+            pytest app/ -v --tb=short
+          else
+            echo "테스트 파일 없음 — 건너뜀"
+          fi
         env:
           FIREBASE_CREDENTIALS: /dev/null
           FIREBASE_STORAGE_BUCKET: dummy
@@ -67,7 +71,9 @@ jobs:
           JWT_SECRET: ci-test-secret-key-32-chars-long!!
           REDIS_URL: redis://localhost:6379
 
+  # PR 전용 Dockerfile 깨짐 검증 — main push 시엔 deploy-cloudrun.yml 쪽 빌드가 어차피 돌아 중복이다.
   docker-build:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     needs: [ python-lint-and-test, kotlin-test ]
 
@@ -80,30 +86,3 @@ jobs:
 
       - name: Build Kotlin API Docker image
         run: docker build -f Dockerfile.kotlin -t onsafe-kotlin-api:${{ github.sha }} .
-
-      # main 브랜치 푸시 시 Docker Hub에 이미지 push
-      # 사전 준비: GitHub Secrets에 아래 값 등록 필요
-      #   DOCKERHUB_USERNAME : Docker Hub 계정명
-      #   DOCKERHUB_TOKEN    : Docker Hub Access Token
-      - name: Log in to Docker Hub
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Push Python AI image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          docker tag onsafe-python-ai:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-python-ai:latest
-          docker tag onsafe-python-ai:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-python-ai:${{ github.sha }}
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-python-ai:latest
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-python-ai:${{ github.sha }}
-
-      - name: Push Kotlin API image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          docker tag onsafe-kotlin-api:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-kotlin-api:latest
-          docker tag onsafe-kotlin-api:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-kotlin-api:${{ github.sha }}
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-kotlin-api:latest
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/onsafe-kotlin-api:${{ github.sha }}

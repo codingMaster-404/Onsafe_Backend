@@ -1,5 +1,6 @@
 package com.onsafe.backend.domain.notification.model.entity
 
+import java.time.Duration
 import java.time.LocalDateTime
 
 data class Notification(
@@ -14,4 +15,12 @@ data class Notification(
     val fall: Boolean = false,
     val isRead: Boolean = false,
     val createdAt: LocalDateTime = LocalDateTime.now()
-)
+) {
+    // Firestore TTL 정책 대상 필드(expired_at) 값
+    val expiredAt: LocalDateTime get() = createdAt.plus(RETENTION_PERIOD)
+
+    companion object {
+        // 앱 안내 "알림 내역은 최근 7일간의 내역만 보관"과 맞춘 값
+        val RETENTION_PERIOD: Duration = Duration.ofDays(7)
+    }
+}

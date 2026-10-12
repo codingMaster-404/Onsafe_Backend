@@ -4,6 +4,7 @@ import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.common.security.InternalAuthGuard
 import com.onsafe.backend.domain.auth.service.LoginHistoryCleanupJob
 import com.onsafe.backend.domain.camera.service.HeartbeatWatchdogJob
+import com.onsafe.backend.domain.internal.service.RetentionBackfillJob
 import com.onsafe.backend.domain.live.service.LiveSweepJob
 import com.onsafe.backend.domain.user.service.DeletionRetryJob
 import io.swagger.v3.oas.annotations.Operation
@@ -25,6 +26,7 @@ class InternalJobController(
     private val loginHistoryCleanupJob: LoginHistoryCleanupJob,
     private val heartbeatWatchdogJob: HeartbeatWatchdogJob,
     private val deletionRetryJob: DeletionRetryJob,
+    private val retentionBackfillJob: RetentionBackfillJob,
     private val liveSweepJob: LiveSweepJob,
     private val internalAuthGuard: InternalAuthGuard
 ) {
@@ -57,6 +59,16 @@ class InternalJobController(
         internalAuthGuard.require(auth)
         deletionRetryJob.run()
         return ApiResponse.ok(message = "deletion retry triggered")
+    }
+
+    @Operation(summary = "보관 기간 백필 — 기존 낙상 로그·알림에 expired_at 기록 (Cloud Scheduler 트리거)", security = [])
+    @PostMapping("/retention-backfill")
+    suspend fun runRetentionBackfill(
+        @RequestHeader(value = "X-Internal-Auth", required = false) auth: String?
+    ): ApiResponse<Unit> {
+        internalAuthGuard.require(auth)
+        retentionBackfillJob.run()
+        return ApiResponse.ok(message = "retention backfill triggered")
     }
 
     @Operation(summary = "만료된 실시간 영상(LIVE) 방 정리 (Cloud Scheduler 1분 주기)", security = [])

@@ -2,10 +2,14 @@ package com.onsafe.backend.common.util
 
 import com.google.api.core.ApiFuture
 import com.google.cloud.Timestamp
+import com.google.cloud.firestore.CollectionReference
 import com.google.cloud.firestore.DocumentReference
+import com.google.cloud.firestore.DocumentSnapshot
+import com.google.cloud.firestore.FieldPath
 import com.google.cloud.firestore.Firestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.Duration
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.Date
@@ -59,6 +63,59 @@ suspend fun Firestore.createAllIfAllAbsent(
     docsToWrite.forEach { (ref, data) -> tx.set(ref, data) }
     true
 }.await()
+
+// 백필 스캔 한 페이지 크기 — WriteBatch 상한(500)과 같게 둔다.
+private const val BACKFILL_SCAN_PAGE = 500
+
+/** [backfillExpiredAt] 결과. missing = 이번 실행에서 찾은 필드 없는 문서(상한까지), alreadyExpired = 그중 만료 시각이 이미 지난 문서. */
+data class ExpiryBackfillResult(val missing: Int, val alreadyExpired: Int, val skipped: Int, val updated: Int)
+
+// Firestore TTL은 expired_at 필드가 있는 문서만 지우므로, 필드 도입 전에 저장된 문서에 `기준 시각 + 보관 기간`을 채운다.
+// 이미 기간이 지난 문서는 채우는 즉시 TTL 대상이 된다(보통 24시간 안 삭제). Firestore는 "필드 없음" 조건으로
+// 쿼리할 수 없어 문서 ID 순으로 페이지 단위 스캔 후 인메모리에서 거른다. 한 번에 최대 limit 건만 기록하고
+// 나머지는 다음 실행이 이어서 처리한다(이미 채운 문서는 건너뛰므로 재실행 안전). apply=false 면 건수만 센다.
+// 기준 필드가 없는 문서는 만료 시각을 정할 수 없어 skipped 로 세고 건드리지 않는다.
+suspend fun Firestore.backfillExpiredAt(
+    collection: CollectionReference,
+    baseField: String,
+    period: Duration,
+    limit: Int,
+    apply: Boolean,
+    now: LocalDateTime = LocalDateTime.now()
+): ExpiryBackfillResult {
+    val targets = mutableListOf<Pair<DocumentReference, LocalDateTime>>()
+    var skipped = 0
+    var last: DocumentSnapshot? = null
+    while (targets.size < limit) {
+        var query = collection.orderBy(FieldPath.documentId()).limit(BACKFILL_SCAN_PAGE)
+        if (last != null) query = query.startAfter(last)
+        val docs = query.get().await().documents
+        for (doc in docs) {
+            if (targets.size >= limit) break
+            if (doc.contains(EXPIRED_AT_FIELD)) continue
+            val base = doc.getTimestamp(baseField)?.toLocalDateTime()
+            if (base == null) skipped++ else targets += doc.reference to base.plus(period)
+        }
+        if (docs.size < BACKFILL_SCAN_PAGE) break
+        last = docs.last()
+    }
+    if (apply) {
+        targets.chunked(BACKFILL_SCAN_PAGE).forEach { chunk ->
+            val batch = batch()
+            chunk.forEach { (ref, expiredAt) -> batch.update(ref, EXPIRED_AT_FIELD, expiredAt.toTimestamp()) }
+            batch.commit().await()
+        }
+    }
+    return ExpiryBackfillResult(
+        missing = targets.size,
+        alreadyExpired = targets.count { (_, expiredAt) -> expiredAt <= now },
+        skipped = skipped,
+        updated = if (apply) targets.size else 0
+    )
+}
+
+// TTL 정책 대상 필드명 — 배포 워크플로(deploy-cloudrun.yml "Apply Firestore TTL policies")와 같은 이름이어야 한다.
+const val EXPIRED_AT_FIELD = "expired_at"
 
 fun LocalDateTime.toTimestamp(): Timestamp =
     Timestamp.of(Date.from(atZone(ZoneId.systemDefault()).toInstant()))
