@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, status
-from app.core.deps import get_current_user_id, require_same_user
+from app.core.deps import get_current_user_id, require_owner_or_guardian, require_same_user
 from app.domain.devices import service
 from app.domain.devices.schemas import DeviceRegisterRequest
 
@@ -11,7 +11,8 @@ async def get_devices(
     user_id: str,
     current_user_id: str = Depends(get_current_user_id),
 ) -> dict:
-    require_same_user(user_id, current_user_id)
+    # 보호자 앱이 연결된 피보호자의 카메라 기기를 조회한다 — 조회는 보호자까지 허용
+    await require_owner_or_guardian(user_id, current_user_id)
     return await service.get_devices(user_id)
 
 
