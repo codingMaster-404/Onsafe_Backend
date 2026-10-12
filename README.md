@@ -113,5 +113,70 @@ docker-compose up --build
 |---|---|
 | [`CHANGELOG.md`](CHANGELOG.md) | PR별 변경 이력 (git 추적됨) |
 | [`v4.0_onsafe_api_spec.md`](v4.0_onsafe_api_spec.md) | v4.2 API 명세서 (최신, git 추적됨) |
+| [`git-deploy-scope.md`](git-deploy-scope.md) | git 배포 파이프라인 범위 분류 (git 추적됨) |
 | `docs/real-device-verification-guide.md` | 낙상 감지 mp4 파이프라인 실기기 검증 절차·설정값 (로컬 전용) |
 | `docs/progress-report-2026-07-29.md` | mp4 파이프라인 진행상황 팀 공유용 요약 (로컬 전용, 일부 항목은 이후 병합 완료로 최신화 필요) |
+
+---
+
+## 배포 범위
+
+> **분류 기준**: `git push → GitHub Actions → GCP Cloud Run` 자동 배포 파이프라인이 실제로 관여하는 항목인가.
+> 전체 분류 근거는 [`git-deploy-scope.md`](git-deploy-scope.md) 참조.
+
+### git 배포 파이프라인 (main push·PR 시 실행)
+
+| 항목 | 역할 | 코드 위치 |
+|---|---|---|
+| **J9. GitHub Actions CI** | main push·PR 트리거, test(push·PR) → Docker 빌드 검증(PR만) | `.github/workflows/backend-ci.yml` |
+| **J10. Workload Identity OIDC** | GitHub → GCP 인증 (키 없이) | `deploy-cloudrun.yml` auth step |
+| **J1. Docker 컨테이너화 (Kotlin/Python)** | 배포용 이미지 빌드 | `Dockerfile.kotlin`, `Dockerfile.python` |
+| **J8. Artifact Registry** | 빌드 이미지 push, Cloud Run이 pull | `deploy-cloudrun.yml` build/push |
+| **J3. Cloud Run 배포** | Kotlin(public) / Python(internal) | `deploy-cloudrun.yml` deploy steps |
+| **— Firestore 인덱스 적용** | `firestore.indexes.json`을 운영 Firestore에 반영 (실패해도 배포는 계속) | `deploy-cloudrun.yml` "Apply Firestore indexes" step |
+| **— Cloud Scheduler 잡 등록** | `/internal/jobs/*` 트리거 3개 등록·갱신 (login-history-cleanup·heartbeat-watchdog·deletion-retry) | `deploy-cloudrun.yml` "Register Cloud Scheduler jobs" step |
+| **J5. Secret Manager** | `--set-secrets`로 Cloud Run에 주입 | `deploy-cloudrun.yml` `--set-secrets` |
+| **J6. Memorystore Redis** | `REDIS_HOST` env로 참조 | `deploy-cloudrun.yml` `--set-env-vars` |
+| **J7. Firestore** | 앱 런타임 DB | Firebase Admin SDK |
+| **J11. VPC 커넥터** | Cloud Run → Memorystore 내부망 경로 | `--vpc-connector onsafe-connector` |
+
+### 배포 이후 운영 (파이프라인 외부, 별도 사이클)
+
+| 항목 | 제외 이유 |
+|---|---|
+| **J4. Terraform IaC** | 인프라 프로비저닝은 별개 사이클. 수동 `terraform apply` — `infra/**`는 배포 워크플로의 `paths-ignore`로 트리거에서 제외됨 |
+| **J12. 도메인/HTTPS/WSS 설정** | 최초 1회 세팅. Cloud Run 기본 `*.run.app` HTTPS 자동 제공 |
+
+### 다른 문서로 분리
+
+| 항목 | 소속 |
+|---|---|
+| **J1(Redis), J2. docker-compose 로컬 개발** | 개발자 로컬 환경 — `docker-compose.yml` (파이프라인 미사용) |
+| **J13. Android AAB 서명 / Play 업로드** | OnSafe 프론트 저장소 |
+| **J14. ProGuard / R8 최적화** | Android 앱 빌드 옵션 (백엔드 무관) |
+
+---
+
+## 관측 및 운영
+
+> 이 섹션 전체가 **런타임/운영 영역**이라 매 배포마다 파이프라인이 건드리는 항목은 거의 없다.
+
+### 앱 코드에 내장 (배포 산출물에 포함)
+
+배포 파이프라인이 별도로 세팅하지 않고, 앱 코드에 이미 들어있어서 **자동으로 함께 배포된다**.
+
+| 항목 | 실제 위치 |
+|---|---|
+| **K5. API Rate Limiter 적용** | `common/ratelimit/RateLimiter.kt` — 전역 필터가 아니라 일부 엔드포인트(로그인·회원가입·아이디/메일 확인·아이디 찾기·재설정 본인확인·페어링·비밀번호 확인)에서 서비스가 호출 |
+| **K7. CORS 오리진 정책** | Python AI 서버 `app/main.py` `CORSMiddleware` (Kotlin API에는 CORS 설정 없음) |
+| **K8. 표준 에러 응답** | `common/exception/*`, `ApiResponse` |
+
+### 배포 이후 운영 (파이프라인 외부)
+
+| 항목 | 제외 이유 |
+|---|---|
+| **K1. Cloud Logging 수집** | Cloud Run stdout/stderr 자동 수집. 파이프라인 개입 없음 |
+| **K2. 구조화 JSON 로깅** | 미도입 — logback·`logging.structured` 설정 없이 기본 텍스트 로그. 도입하면 앱 코드에 포함되는 항목 |
+| **K3. Cloud Monitoring 알림** | 알림 정책 미설정 — Terraform은 Monitoring API 활성화·`roles/monitoring.metricWriter`만 있음. 설정하게 되면 콘솔/Terraform 1회로 배포 주기와 무관 |
+| **K4. 에러 집계 도구 (Sentry 등)** | 검토 단계 — 코드·파이프라인 모두 미도입 |
+| **K6. Internal API IP 화이트리스트** | 미설정 — Python AI 서버만 배포 옵션 `--ingress internal-and-cloud-load-balancing`. Kotlin API는 공개 서비스라 `/internal/**`을 `X-Internal-Auth` 헤더 시크릿으로만 보호하며, IP 제한은 인프라 레벨 작업으로 남아 있음 |
