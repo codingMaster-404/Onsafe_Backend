@@ -11,6 +11,9 @@ data class Notification(
     // FallLogResponse와 동일한 필드 구성 — 클라이언트가 score > RiskLevel.DANGER_THRESHOLD로
     // FALL/WARNING 타입을 직접 판별하는 기존 AccidentHistory 패턴을 그대로 재사용할 수 있게 한다.
     val logId: String? = null,
+    // 이 알림이 어느 피보호자에 관한 것인지 — 연결 해제·교체 때 보호자 알림함에서 그 피보호자 알림만 골라 지운다(S1).
+    // 피보호자 본인 사본에도 같은 값(본인)이 들어가지만 삭제는 보호자(user_id) 기준이라 영향이 없다.
+    val subjectUserId: String? = null,
     val score: Float? = null,
     val fall: Boolean = false,
     val isRead: Boolean = false,

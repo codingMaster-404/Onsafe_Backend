@@ -13,6 +13,7 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.util.await
 import com.onsafe.backend.domain.camera.model.entity.RiskLevel
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
+import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.domain.notification.model.dto.NotificationLogResponse
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.model.dto.NotificationResponse
@@ -29,6 +30,7 @@ import kotlinx.coroutines.coroutineScope
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.time.Duration
+import java.time.LocalDateTime
 
 // 앱(PushNotifications.kt)이 만든 알림 채널 ID. 서버가 android.notification.channel_id로 실어
 // 보내야 백그라운드 알림에도 채널이 적용된다.
@@ -43,7 +45,8 @@ class NotificationService(
     private val notificationRepository: NotificationRepository,
     private val guardianLinkRepository: GuardianLinkRepository,
     private val fcmTokenRepository: FcmTokenRepository,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val fallLogRepository: FallLogRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -67,6 +70,7 @@ class NotificationService(
                 logId = request.logId,
                 score = request.score,
                 fall = request.fall,
+                subjectUserId = request.subjectUserId,
             )
         )
 
@@ -206,6 +210,9 @@ class NotificationService(
      * 한 명(예: 만료된 FCM 토큰) 실패가 나머지 수신자 발송을 막지 않게 한다. 본인 발송(FCM 네트워크
      * 호출 포함)과 보호자 목록 조회·보호자 발송은 서로 데이터 의존이 없어 전부 병렬로 처리해
      * 보호자 수·본인 발송 지연에 비례해 전체 시간이 늘어나지 않게 한다.
+     *
+     * [guardianBody]가 있으면 보호자 사본 본문만 그것으로 바꾼다(피보호자 이름 접두는 유지) — 카메라 오프라인 중
+     * 재알림처럼 보호자에게만 다른 행동을 안내할 때 쓴다(S6). 본인 사본은 항상 [body].
      */
     suspend fun notifyElderAndGuardians(
         elderUserId: String,
@@ -214,7 +221,8 @@ class NotificationService(
         logId: String? = null,
         score: Float? = null,
         fall: Boolean = false,
-        data: Map<String, String>? = null
+        data: Map<String, String>? = null,
+        guardianBody: String? = null
     ) {
         coroutineScope {
             val elderDeferred = async { userRepository.findByUserId(elderUserId) }
@@ -222,7 +230,7 @@ class NotificationService(
             val elderSend = async {
                 runCatching {
                     val elder = elderDeferred.await() ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-                    sendNotification(elder, NotificationRequest(elderUserId, title, body, logId, score, fall, data))
+                    sendNotification(elder, NotificationRequest(elderUserId, title, body, logId, score, fall, data, subjectUserId = elderUserId))
                 }.onFailure { e -> log.warn("알림 전송 실패 (userId: $elderUserId): ${e.message}") }
             }
 
@@ -238,7 +246,7 @@ class NotificationService(
             val guardianSends = guardianIds.map { guardianId ->
                 async {
                     runCatching {
-                        sendNotification(NotificationRequest(guardianId, title, "[$elderName] $body", logId, score, fall, data))
+                        sendNotification(NotificationRequest(guardianId, title, "[$elderName] ${guardianBody ?: body}", logId, score, fall, data, subjectUserId = elderUserId))
                     }.onFailure { e -> log.warn("보호자 알림 전송 실패 (guardianId: $guardianId): ${e.message}") }
                 }
             }
@@ -269,7 +277,8 @@ class NotificationService(
                                 userId = guardianId,
                                 title = "카메라 오프라인",
                                 body = "[$elderName] 카메라 앱과 연결이 끊겼습니다. 상태를 확인해주세요.",
-                                data = mapOf("event" to "camera_offline", "elder_user_id" to elderUserId)
+                                data = mapOf("event" to "camera_offline", "elder_user_id" to elderUserId),
+                                subjectUserId = elderUserId
                             )
                         )
                     }.onFailure { e -> log.warn("오프라인 알림 실패 (guardianId: $guardianId): ${e.message}") }
@@ -295,7 +304,8 @@ class NotificationService(
                                 userId = guardianId,
                                 title = "카메라 다시 온라인",
                                 body = "[$elderName] 카메라 앱 연결이 복구되었습니다.",
-                                data = mapOf("event" to "camera_recovered", "elder_user_id" to elderUserId)
+                                data = mapOf("event" to "camera_recovered", "elder_user_id" to elderUserId),
+                                subjectUserId = elderUserId
                             )
                         )
                     }.onFailure { e -> log.warn("복구 알림 실패 (guardianId: $guardianId): ${e.message}") }
@@ -346,6 +356,21 @@ class NotificationService(
                 }
             }.awaitAll()
         }
+    }
+
+    /**
+     * 연결 해제·교체 시 보호자 알림함에서 그 피보호자 관련 알림을 지운다(S1) — 해제 안내("더 이상 공유하지 않습니다")와
+     * 맞추기 위함. [Notification.subjectUserId]로 지우고, 필드 도입 전 문서는 피보호자의 최근 7일(알림 보관 기간) 낙상
+     * log_id로 보완한다. log_id도 없는 옛 오프라인·복구·승인 알림은 7일 TTL로 사라진다(E1).
+     * 피보호자 본인 알림함은 건드리지 않는다. 실패 처리는 호출부 몫이다.
+     */
+    suspend fun purgeGuardianInbox(guardianUserId: String, elderUserId: String) {
+        val bySubject = notificationRepository.deleteByUserAndSubject(guardianUserId, elderUserId)
+        val recentLogIds = fallLogRepository.findRecentByUserId(
+            elderUserId, since = LocalDateTime.now().minus(Notification.RETENTION_PERIOD)
+        ).map { it.logId }
+        val byLogId = notificationRepository.deleteByUserAndLogIds(guardianUserId, recentLogIds)
+        log.info("보호자 알림함 정리 — guardian=$guardianUserId elder=$elderUserId subject=$bySubject logId=$byLogId")
     }
 
     suspend fun getNotifications(userId: String): List<NotificationLogResponse> =

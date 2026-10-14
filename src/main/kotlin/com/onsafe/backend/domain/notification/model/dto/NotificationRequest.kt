@@ -11,5 +11,7 @@ data class NotificationRequest(
     val logId: String? = null,
     val score: Float? = null,
     val fall: Boolean = false,
-    val data: Map<String, String>? = null
+    val data: Map<String, String>? = null,
+    // 알림함 정리용 대상 피보호자(Notification.subjectUserId) — FCM 페이로드에는 싣지 않는다.
+    val subjectUserId: String? = null
 )

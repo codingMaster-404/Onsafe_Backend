@@ -1,10 +1,10 @@
 package com.onsafe.backend.domain.logs.service
 
+import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
+import com.onsafe.backend.domain.camera.service.HeartbeatWatchdogJob
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.domain.notification.service.NotificationService
-import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
-import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
 import java.time.Duration
 import java.time.LocalDateTime
@@ -16,29 +16,34 @@ import java.time.LocalDateTime
  *
  * 발송 직전 [FallLogRepository.claimReminder]가 트랜잭션으로 재확인하므로, 이 스케줄러의
  * 최초 조회 결과와 실제 발송 사이에 보호자가 확인했거나 다른 실행이 먼저 처리했어도 중복 발송되지 않는다.
+ *
+ * Cloud Scheduler가 5분마다 `POST /internal/jobs/fall-escalation`으로 호출한다(E6-1). 이전에는 앱 내부
+ * `@Scheduled`로만 돌아 Cloud Run min-instances=0에서 요청이 없는 시간에는 재알림이 나가지 않았다(다른 내부 잡과 같은 이유).
+ * Cloud Scheduler는 이전 실행이 끝나기 전에도 다음 트리거를 보내지만, 겹쳐 실행돼도 위 트랜잭션이 중복 발송을 막는다.
  */
 @Component
 class FallLogEscalationScheduler(
     private val fallLogRepository: FallLogRepository,
-    private val notificationService: NotificationService
+    private val notificationService: NotificationService,
+    private val realtimeDataRepository: RealtimeDataRepository
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
     companion object {
         private val REMINDER_INTERVAL = Duration.ofMinutes(15)  // 확인될 때까지 반복 주기
-        private val LOOKBACK_WINDOW = Duration.ofHours(48)      // 조회 대상 상한 — 무한 누적 방지
+        // 조회 대상 상한 — 무한 누적 방지. 해제 전 확인(GuardianService.getUnpairCheck)도 같은 기간을 센다.
+        val LOOKBACK_WINDOW: Duration = Duration.ofHours(48)
+        const val OFFLINE_GUARDIAN_BODY = "카메라가 오프라인이라 직접 확인이 어려울 수 있습니다. 피보호자에게 연락해 확인해주세요."
     }
 
-    // fixedDelay: 이전 실행이 끝난 뒤에만 다음 실행을 예약 — 겹침(중복 실행) 방지
-    @Scheduled(fixedDelay = 5 * 60 * 1000L, initialDelay = 60 * 1000L)
-    fun checkEscalations() = runBlocking {
+    suspend fun run() {
         val cutoff = LocalDateTime.now().minus(LOOKBACK_WINDOW)
         val candidates = runCatching { fallLogRepository.findUnconfirmedDangerLogs(cutoff) }
             .getOrElse { e ->
                 log.error("에스컬레이션 대상 조회 실패: ${e.message}", e)
-                return@runBlocking
+                return
             }
-        if (candidates.isEmpty()) return@runBlocking
+        if (candidates.isEmpty()) return
 
         // 사용자당 가장 최근 이벤트만 에스컬레이션 대상으로 남긴다
         val latestPerUser = candidates.groupBy { it.userId }
@@ -63,11 +68,23 @@ class FallLogEscalationScheduler(
                         "event" to "fall_escalated",
                         "log_id" to claimed.logId,
                         "user_id" to claimed.userId
-                    )
+                    ),
+                    guardianBody = if (isCameraOffline(claimed.userId)) OFFLINE_GUARDIAN_BODY else null
                 )
             }.onFailure { e ->
                 log.error("에스컬레이션 알림 전송 실패 log_id=${claimed.logId}: ${e.message}", e)
             }
         }
+    }
+
+    // 카메라 기기가 꺼져 있으면 피보호자가 앱에서 확인할 수 없으니 보호자에게 직접 연락을 안내한다(S6).
+    // 기준은 LIVE 시작 전 기기 확인(LiveService.requireDeviceOnline)과 같다 — heartbeat 6분 초과 또는 기록 없음.
+    // 워치독의 is_online 플래그는 최대 5분 늦게 바뀌어 쓰지 않는다. 조회 실패는 기존 문구로 보낸다(재알림을 막지 않음).
+    private suspend fun isCameraOffline(elderUserId: String): Boolean {
+        val data = runCatching { realtimeDataRepository.findByUserId(elderUserId) }
+            .onFailure { e -> log.warn("재알림 카메라 상태 조회 실패 — elder=$elderUserId: ${e.message}") }
+            .getOrElse { return false }
+        val last = data?.lastHeartbeatAt
+        return last == null || last.isBefore(LocalDateTime.now().minus(HeartbeatWatchdogJob.OFFLINE_THRESHOLD))
     }
 }

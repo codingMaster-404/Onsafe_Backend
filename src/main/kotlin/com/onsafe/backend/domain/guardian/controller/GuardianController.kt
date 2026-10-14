@@ -9,6 +9,7 @@ import com.onsafe.backend.domain.guardian.model.dto.GuardianResponse
 import com.onsafe.backend.domain.guardian.model.dto.PairRequest
 import com.onsafe.backend.domain.guardian.model.dto.PairingCodeResponse
 import com.onsafe.backend.domain.guardian.model.dto.PairingRequestResponse
+import com.onsafe.backend.domain.guardian.model.dto.UnpairCheckResponse
 import com.onsafe.backend.domain.guardian.model.dto.WardResponse
 import com.onsafe.backend.domain.guardian.service.GuardianService
 import io.swagger.v3.oas.annotations.Operation
@@ -115,6 +116,22 @@ class GuardianController(
     ): ApiResponse<GuardianResponse?> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
         return ApiResponse.ok(guardianService.getMyGuardian(userId))
+    }
+
+    @Operation(
+        summary = "연결 해제 전 확인",
+        description = "해제하기 전에 피보호자의 미확인 위험 이벤트 건수(최근 48시간, 연결 이후)를 돌려줍니다. " +
+            "1건 이상이면 앱이 '해제하면 보호자에게 더 이상 알림이 가지 않습니다' 확인 창을 띄웁니다. 보호자·피보호자 어느 쪽에서도 호출할 수 있습니다.",
+        security = [SecurityRequirement(name = "BearerAuth")]
+    )
+    @GetMapping("/{userId}/pair/{counterpartUserId}/unpair-check")
+    suspend fun getUnpairCheck(
+        @PathVariable userId: String,
+        @PathVariable counterpartUserId: String,
+        @AuthenticationPrincipal principal: String
+    ): ApiResponse<UnpairCheckResponse> {
+        if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
+        return ApiResponse.ok(guardianService.getUnpairCheck(userId, counterpartUserId))
     }
 
     @Operation(

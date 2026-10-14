@@ -52,6 +52,25 @@ class NotificationRepository(private val firestore: Firestore) {
         firestore.deleteInBatches(refs)
     }
 
+    // 연결 해제·교체 시 보호자 알림함에서 그 피보호자 관련 알림을 지운다(S1). 등호 조건 2개라 복합 인덱스가 필요 없다.
+    suspend fun deleteByUserAndSubject(userId: String, subjectUserId: String): Int {
+        val docs = col.whereEqualTo("user_id", userId).whereEqualTo("subject_user_id", subjectUserId).get().await().documents
+        firestore.deleteInBatches(docs.map { it.reference })
+        return docs.size
+    }
+
+    // subject_user_id 도입 전 문서 보완용 — 낙상 log_id로 찾되 [userId] 알림함 것만 지운다.
+    // deleteByLogIds와 달리 같은 log_id를 가진 피보호자 본인 사본은 남긴다.
+    suspend fun deleteByUserAndLogIds(userId: String, logIds: List<String>): Int {
+        if (logIds.isEmpty()) return 0
+        // Firestore whereIn은 값 30개까지만 허용해 청크로 나눈다.
+        val refs = logIds.chunked(30).flatMap { chunk ->
+            col.whereEqualTo("user_id", userId).whereIn("log_id", chunk).get().await().documents.map { it.reference }
+        }
+        firestore.deleteInBatches(refs)
+        return refs.size
+    }
+
     // expired_at 도입(TTL) 전에 저장된 알림에 created_at + 7일을 채운다 — RetentionBackfillJob 전용.
     suspend fun backfillExpiredAt(limit: Int, apply: Boolean): ExpiryBackfillResult =
         firestore.backfillExpiredAt(col, "created_at", Notification.RETENTION_PERIOD, limit, apply)
@@ -69,6 +88,7 @@ class NotificationRepository(private val firestore: Firestore) {
         title = getString("title") ?: "",
         body = getString("body") ?: "",
         logId = getString("log_id"),
+        subjectUserId = getString("subject_user_id"),
         score = getDouble("score")?.toFloat(),
         fall = getBoolean("fall") ?: false,
         isRead = getBoolean("is_read") ?: false,
@@ -80,6 +100,7 @@ class NotificationRepository(private val firestore: Firestore) {
         "title" to title,
         "body" to body,
         "log_id" to logId,
+        "subject_user_id" to subjectUserId,
         "score" to score,
         "fall" to fall,
         "is_read" to isRead,
