@@ -349,7 +349,8 @@ class NotificationService(
                                 userId = guardianId,
                                 title = title,
                                 body = body(elderName),
-                                data = mapOf("event" to event, "elder_user_id" to elderUserId)
+                                data = mapOf("event" to event, "elder_user_id" to elderUserId),
+                                subjectUserId = elderUserId
                             )
                         )
                     }.onFailure { e -> log.warn("$event 알림 실패 (guardianId: $guardianId): ${e.message}") }

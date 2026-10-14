@@ -356,7 +356,8 @@ class NotificationServiceTest {
         listOf("g1", "g2").forEach { id ->
             coVerify(exactly = 1) {
                 notificationRepository.save(match {
-                    it.userId == id && it.title == "낙상 감지 중단" && it.body.startsWith("[홍길동]")
+                    it.userId == id && it.title == "낙상 감지 중단" && it.body.startsWith("[홍길동]") &&
+                        it.subjectUserId == "testUser"
                 })
             }
         }
@@ -366,7 +367,7 @@ class NotificationServiceTest {
     fun `감지 재개 알림 - 보호자에게 보내고 보호자가 없으면 아무것도 보내지 않는다`() = runTest {
         stubGuardians("g1")
         notificationService.notifyGuardiansStreamRecovered("testUser")
-        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.title == "낙상 감지 재개" }) }
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.title == "낙상 감지 재개" && it.subjectUserId == "testUser" }) }
 
         coEvery { guardianLinkRepository.findGuardiansOf("lonely") } returns emptyList()
         coEvery { userRepository.findByUserId("lonely") } returns baseUser.copy(userId = "lonely")

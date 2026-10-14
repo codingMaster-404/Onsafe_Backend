@@ -24,7 +24,7 @@
 - `/internal/jobs/fall-escalation` 추가 — 다른 내부 잡처럼 `X-Internal-Auth` 헤더 인증만, 인프라 IP 제한 없음
 - 새 Firestore 인덱스·환경변수·시크릿 없음. 알림 삭제 쿼리(등호 2개 / 등호 + `in`)는 단일 필드 인덱스로 처리되는 것으로 판단 — 배포 후 `FAILED_PRECONDITION`이면 복합 인덱스 추가
 - 프론트 짝 작업: 해제 확인 창 전에 `unpair-check` 호출, 1건 이상이면 경고 문구(스펙 v4.18). 앱 변경 전에도 서버는 호환
-- 카메라 스트리밍 브랜치(v4.17)와 `NotificationService.kt`·`NotificationServiceTest.kt`·`deploy-cloudrun.yml`·`CHANGELOG.md`·API 스펙(변경 이력·내부 API 문단)이 겹친다 — 양쪽 유지, 카메라의 `notifyGuardiansOfCamera`에도 `subjectUserId` 채울 것
+- 카메라 스트리밍(v4.17, PR #22) 머지 후 리베이스 — 카메라의 감지 중단·재개 알림(`notifyGuardiansOfCamera`)에도 `subjectUserId`를 채워 해제·교체 때 함께 지워지게 함
 
 ## [Unreleased] - feat/camera-streaming-back (2026-10-13)
 
