@@ -11,6 +11,8 @@ import com.google.firebase.messaging.Message
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
+import com.onsafe.backend.domain.logs.model.entity.FallLog
+import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.model.entity.FcmToken
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
@@ -42,6 +44,7 @@ class NotificationServiceTest {
     private val guardianLinkRepository: GuardianLinkRepository = mockk()
     private val fcmTokenRepository: FcmTokenRepository = mockk(relaxUnitFun = true)
     private val settingsRepository: SettingsRepository = mockk()
+    private val fallLogRepository: FallLogRepository = mockk()
     private lateinit var notificationService: NotificationService
 
     private val baseUser = User(
@@ -61,7 +64,7 @@ class NotificationServiceTest {
         coEvery { settingsRepository.findByUserId(any()) } returns UserSettings("testUser")
         notificationService = NotificationService(
             userRepository, notificationRepository, guardianLinkRepository, fcmTokenRepository,
-            settingsRepository
+            settingsRepository, fallLogRepository
         )
         mockkStatic(FirebaseMessaging::class)
     }
@@ -369,5 +372,65 @@ class NotificationServiceTest {
         coEvery { userRepository.findByUserId("lonely") } returns baseUser.copy(userId = "lonely")
         notificationService.notifyGuardiansStreamRecovered("lonely")
         coVerify(exactly = 1) { notificationRepository.save(any()) }
+    }
+
+    // ── 알림 대상 피보호자·알림함 정리 (S1) ─────────────────────
+
+    @Test
+    fun `낙상 알림 - 본인·보호자 사본 모두 대상 피보호자를 남긴다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.findByUserId("g1") } returns baseUser.copy(userId = "g1")
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns listOf("g1")
+        coEvery { fcmTokenRepository.findAll(any()) } returns emptyList()
+
+        notificationService.notifyElderAndGuardians("testUser", "낙상 감지", "확인해주세요", logId = "log1", fall = true)
+
+        listOf("testUser", "g1").forEach { id ->
+            coVerify(exactly = 1) { notificationRepository.save(match { it.userId == id && it.subjectUserId == "testUser" }) }
+        }
+    }
+
+    @Test
+    fun `오프라인·복구 알림 - 보호자 사본에 대상 피보호자를 남긴다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.findByUserId("g1") } returns baseUser.copy(userId = "g1")
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns listOf("g1")
+        coEvery { fcmTokenRepository.findAll(any()) } returns emptyList()
+
+        notificationService.notifyGuardiansCameraOffline("testUser")
+        notificationService.notifyGuardiansCameraRecovered("testUser")
+
+        coVerify(exactly = 2) { notificationRepository.save(match { it.userId == "g1" && it.subjectUserId == "testUser" }) }
+    }
+
+    @Test
+    fun `알림함 정리 - 대상 필드로 지우고 필드 없는 옛 문서는 최근 낙상 log_id로 보호자 것만 지운다`() = runTest {
+        coEvery { notificationRepository.deleteByUserAndSubject("g1", "testUser") } returns 2
+        coEvery { fallLogRepository.findRecentByUserId("testUser", since = any()) } returns listOf(
+            FallLog(logId = "log1", deviceId = "d", userId = "testUser", score = 0.9f, fall = true),
+            FallLog(logId = "log2", deviceId = "d", userId = "testUser", score = 0.5f, fall = false),
+        )
+        coEvery { notificationRepository.deleteByUserAndLogIds("g1", listOf("log1", "log2")) } returns 1
+
+        notificationService.purgeGuardianInbox("g1", "testUser")
+
+        coVerify(exactly = 1) { notificationRepository.deleteByUserAndSubject("g1", "testUser") }
+        coVerify(exactly = 1) { notificationRepository.deleteByUserAndLogIds("g1", listOf("log1", "log2")) }
+        coVerify(exactly = 0) { notificationRepository.deleteByLogIds(any()) }  // 본인 사본까지 지우는 탈퇴용 경로는 쓰지 않는다
+    }
+
+    // ── 보호자 사본 본문 대체 (S6) ─────────────────────────────
+
+    @Test
+    fun `guardianBody - 보호자 사본만 바꾸고 이름 접두는 유지하며 본인 사본은 원래 본문`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.findByUserId("g1") } returns baseUser.copy(userId = "g1")
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns listOf("g1")
+        coEvery { fcmTokenRepository.findAll(any()) } returns emptyList()
+
+        notificationService.notifyElderAndGuardians("testUser", "확인이 필요합니다", "원래 본문", guardianBody = "보호자 본문")
+
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "testUser" && it.body == "원래 본문" }) }
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.body == "[홍길동] 보호자 본문" }) }
     }
 }
