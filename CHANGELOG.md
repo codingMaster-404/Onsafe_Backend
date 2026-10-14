@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased] - feat/pairing-safety-back (2026-10-13)
+
+### 페어링 안전성 묶음 — 해제 전 확인·알림함 정리·보안 이벤트·재알림 이전 (API 스펙 v4.18)
+
+**변경 파일:** `SecurityEventType.kt`, `LoginHistory.kt`, `GuardianService.kt`, `GuardianController.kt`, `UnpairCheckResponse.kt`(신규), `Notification.kt`, `NotificationRequest.kt`, `NotificationRepository.kt`, `NotificationService.kt`, `FallLogEscalationScheduler.kt`, `InternalJobController.kt`, `OnSafeApplication.kt`, `deploy-cloudrun.yml`, `v4.0_onsafe_api_spec.md`
+
+#### Added
+- **해제 전 확인** `GET /api/guardian/{user_id}/pair/{counterpart_user_id}/unpair-check` → `unconfirmed_danger_count`(미확인 + 점수 75 초과, 최근 48시간·연결 이후). 기존 `DELETE` 해제 계약은 그대로
+- **보안 이벤트** `PAIRING_CREATED`·`PAIRING_UNPAIRED`·`PAIRING_DISPLACED` — 행위자 `user_id`, 상대 `target_user_id`. 기록 실패는 승인·해제를 막지 않음(error 로그)
+- **알림 대상 필드** `notifications.subject_user_id` — 낙상·재알림(본인·보호자 사본)·카메라 오프라인·복구·연결 완료 알림에 대상 피보호자 기록(응답 미노출)
+- **보호자 알림함 정리** `NotificationService.purgeGuardianInbox` — 연결 해제·재페어링으로 밀려날 때 그 보호자 알림함의 해당 피보호자 알림 삭제. 필드 도입 전 문서는 최근 7일 낙상 `log_id`로 보완(`NotificationRepository.deleteByUserAndSubject`·`deleteByUserAndLogIds` — 피보호자 본인 사본은 남김). 해제·교체 통지는 정리 뒤에 보내 남는다. 정리 실패는 해제를 막지 않음
+- **내부 잡** `POST /internal/jobs/fall-escalation` + Cloud Scheduler 5분 등록
+
+#### Changed
+- `FallLogEscalationScheduler`: `@Scheduled`·`runBlocking` 제거 → `suspend fun run()`(Cloud Scheduler 트리거). `LOOKBACK_WINDOW`(48시간) 공개 — 해제 전 확인이 같은 기간 사용
+- 재알림 때 피보호자 카메라가 오프라인(heartbeat 6분 초과·기록 없음 — LIVE 기기 확인과 같은 기준)이면 보호자 본문을 직접 연락 안내로 대체. `NotificationService.notifyElderAndGuardians`에 `guardianBody` 인자(보호자 사본만)
+- `NotificationRequest`에 `subjectUserId`(맨 끝 — 위치 인자 호출 호환)
+- `OnSafeApplication`: `@EnableScheduling` 유지(남은 `@Scheduled`는 `FallLogVideoReconciliationJob`), 주석 정정
+
+#### Deployment (주의)
+- **Cloud Scheduler 잡 1개 추가**(`onsafe-fall-escalation`, 5분 — 총 7개, 무료 3개 초과분 과금). 앱 내부 스케줄러를 없앴으므로 **등록 단계가 실패하면 재알림이 멈춘다**(워크플로 실패로 드러남)
+- `/internal/jobs/fall-escalation` 추가 — 다른 내부 잡처럼 `X-Internal-Auth` 헤더 인증만, 인프라 IP 제한 없음
+- 새 Firestore 인덱스·환경변수·시크릿 없음. 알림 삭제 쿼리(등호 2개 / 등호 + `in`)는 단일 필드 인덱스로 처리되는 것으로 판단 — 배포 후 `FAILED_PRECONDITION`이면 복합 인덱스 추가
+- 프론트 짝 작업: 해제 확인 창 전에 `unpair-check` 호출, 1건 이상이면 경고 문구(스펙 v4.18). 앱 변경 전에도 서버는 호환
+- 카메라 스트리밍(v4.17, PR #22) 머지 후 리베이스 — 카메라의 감지 중단·재개 알림(`notifyGuardiansOfCamera`)에도 `subjectUserId`를 채워 해제·교체 때 함께 지워지게 함
+
 ## [Unreleased] - feat/camera-streaming-back (2026-10-13)
 
 ### 카메라 스트리밍 재연결 지원 — 종료 코드·버퍼 초기화·감지 중단 알림 (API 스펙 v4.17)

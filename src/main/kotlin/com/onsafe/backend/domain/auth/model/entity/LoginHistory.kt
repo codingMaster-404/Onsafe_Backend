@@ -12,8 +12,9 @@ import java.time.LocalDateTime
  *
  * [success]·[failReason]도 로그인 계열에서만 의미가 있다.
  *
- * [targetUserId]는 다른 사용자를 대상으로 한 행위에만 채운다 — 실시간 영상 열람(`LIVE_VIEW_*`)의 피보호자.
- * "내 영상을 누가 언제 봤나"는 `target_user_id`로 조회한다.
+ * [targetUserId]는 다른 사용자를 대상으로 한 행위에만 채운다 — 실시간 영상 열람(`LIVE_VIEW_*`)의 피보호자,
+ * 보호자 연결 성립·해제·교체(`PAIRING_*`)의 상대.
+ * "내 영상을 누가 언제 봤나"·"누가 나와의 연결을 맺고 끊었나"는 `target_user_id`로 조회한다.
  */
 data class LoginHistory(
     val historyId: String,

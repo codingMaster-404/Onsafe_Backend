@@ -36,7 +36,7 @@ class GuardianServiceLiveTest {
     private val settingsService: SettingsService = mockk(relaxed = true)
     private val service = GuardianService(
         guardianLinkRepository, userRepository, notificationService, redis, rateLimiter, codeGenerator, terminator,
-        settingsService
+        settingsService, mockk(relaxed = true), mockk(relaxed = true)
     ).also { every { redis.opsForValue() } returns valueOps }
 
     private fun user(id: String) = User(

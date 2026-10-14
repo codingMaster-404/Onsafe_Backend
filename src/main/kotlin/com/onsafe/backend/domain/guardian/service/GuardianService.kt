@@ -5,13 +5,20 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.ratelimit.RateLimiter
 import com.onsafe.backend.common.security.VerificationCodeGenerator
 import com.onsafe.backend.common.util.guardRedis
+import com.onsafe.backend.domain.auth.model.entity.LoginHistory
+import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
+import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.guardian.model.dto.GuardianResponse
 import com.onsafe.backend.domain.guardian.model.dto.PairingCodeResponse
 import com.onsafe.backend.domain.guardian.model.dto.PairingRequestResponse
+import com.onsafe.backend.domain.guardian.model.dto.UnpairCheckResponse
 import com.onsafe.backend.domain.guardian.model.dto.WardResponse
 import com.onsafe.backend.domain.guardian.model.entity.GuardianLink
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
+import com.onsafe.backend.domain.camera.model.entity.RiskLevel
 import com.onsafe.backend.domain.live.service.LiveSessionTerminator
+import com.onsafe.backend.domain.logs.repository.FallLogRepository
+import com.onsafe.backend.domain.logs.service.FallLogEscalationScheduler
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.service.NotificationService
 import com.onsafe.backend.domain.settings.model.dto.LiveVideoSettingsRequest
@@ -24,6 +31,7 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate
 import org.springframework.data.redis.core.script.RedisScript
 import org.springframework.stereotype.Service
 import java.time.Duration
+import java.time.LocalDateTime
 import java.util.UUID
 
 // 5분에서 15분으로 상향 — 노인 피보호자가 보호자에게 코드 전달하는 사이 만료돼 재발급이
@@ -45,7 +53,9 @@ class GuardianService(
     private val rateLimiter: RateLimiter,
     private val verificationCodeGenerator: VerificationCodeGenerator,
     private val liveSessionTerminator: LiveSessionTerminator,
-    private val settingsService: SettingsService
+    private val settingsService: SettingsService,
+    private val loginHistoryRepository: LoginHistoryRepository,
+    private val fallLogRepository: FallLogRepository
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -259,11 +269,17 @@ class GuardianService(
         // 대해 해제 알림을 받는 어색함이 안 생긴다.
         // 밀려난 관계의 진행 중 실시간 영상은 즉시 끊는다(W4) — 피보호자 단위 세션이라 그 피보호자의 방을 지운다.
         displaced.forEach { oldLink -> liveSessionTerminator.terminate(oldLink.elderUserId, reason = "pairing_displaced") }
+        // 밀려난 보호자 알림함에서 그 피보호자 알림을 지운다(S1). 아래 교체 통지보다 먼저 지워 통지는 남긴다.
+        displaced.forEach { oldLink -> purgeGuardianInbox(oldLink.guardianUserId, oldLink.elderUserId) }
+
+        // 연결 기간을 재구성할 수 있게 성립·교체를 보안 이벤트로 남긴다(S2). 명의는 승인한 피보호자.
+        recordPairingEvent(elderUserId, guardianUserId, SecurityEventType.PAIRING_CREATED)
 
         displaced.forEach { oldLink ->
             val recipient = if (oldLink.guardianUserId == guardianUserId) oldLink.elderUserId
                             else oldLink.guardianUserId
             if (recipient == guardianUserId || recipient == elderUserId) return@forEach
+            recordPairingEvent(elderUserId, recipient, SecurityEventType.PAIRING_DISPLACED)
             val role = if (oldLink.guardianUserId == recipient) "보호자" else "피보호자"
             runCatching {
                 notificationService.sendNotification(
@@ -292,7 +308,8 @@ class GuardianService(
                         "event" to "pairing_approved",
                         "elder_user_id" to elderUserId,
                         "elder_name" to elder.name,
-                    )
+                    ),
+                    subjectUserId = elderUserId
                 )
             )
         }.onFailure { e -> log.warn("페어링 승인 FCM 실패 — guardianUserId=$guardianUserId cause=${e.message}") }
@@ -348,6 +365,21 @@ class GuardianService(
         return userRepository.findByUserId(guardianId)?.let(GuardianResponse::from)
     }
 
+    // 해제 전 확인(S4) — 재알림은 발송 시점의 보호자에게 가므로, 미확인 위험 이벤트가 남은 채 해제하면 이후 재알림이
+    // 피보호자 본인에게만 간다. 앱이 해제 확인 창 전에 불러 건수를 경고한다. 기존 DELETE 계약은 그대로 둔다.
+    // 기준은 재알림 대상과 같다 — 미확인 + score > 위험 임계, 최근 48시간(LOOKBACK_WINDOW). 단 연결 시각 이전은
+    // 세지 않는다(보호자는 연결 이후 이력만 본다는 AccessGuard 정책 — 재페어링 시 이전 관계 이력 노출 방지).
+    suspend fun getUnpairCheck(userId: String, counterpartUserId: String): UnpairCheckResponse {
+        val link = guardianLinkRepository.find(userId, counterpartUserId)
+            ?: guardianLinkRepository.find(counterpartUserId, userId)
+            ?: throw BusinessException(ErrorCode.PAIRING_NOT_FOUND)
+        val windowStart = LocalDateTime.now().minus(FallLogEscalationScheduler.LOOKBACK_WINDOW)
+        val since = if (link.createdAt > windowStart) link.createdAt else windowStart
+        val count = fallLogRepository.findRecentByUserId(link.elderUserId, since = since)
+            .count { !it.isConfirmed && it.score > RiskLevel.DANGER_THRESHOLD }
+        return UnpairCheckResponse(unconfirmedDangerCount = count)
+    }
+
     // 어느 쪽(보호자/피보호자)이 호출했는지 몰라도 되도록 양방향 문서 ID를 모두 시도한다.
     // 해제 성립 후 상대방에게 FCM 통지 — "누가 언제 끊었는지" 상대가 알 수 있어야 함(21번째 회의 §7c).
     suspend fun unpair(userId: String, counterpartUserId: String) {
@@ -358,6 +390,10 @@ class GuardianService(
             else -> throw BusinessException(ErrorCode.PAIRING_NOT_FOUND)
         }
         liveSessionTerminator.terminate(elderUserId, reason = "unpaired")
+        recordPairingEvent(userId, counterpartUserId, SecurityEventType.PAIRING_UNPAIRED)
+        // 해제 안내("더 이상 공유하지 않습니다")와 맞게 보호자 알림함의 피보호자 알림을 지운다(S1). 해제 통지는 그 뒤에 보내 남긴다.
+        val guardianUserId = if (elderUserId == userId) counterpartUserId else userId
+        purgeGuardianInbox(guardianUserId, elderUserId)
 
         val initiator = userRepository.findByUserId(userId)
         runCatching {
@@ -373,6 +409,23 @@ class GuardianService(
                 )
             )
         }.onFailure { e -> log.warn("페어링 해제 FCM 실패 — counterpartUserId=$counterpartUserId cause=${e.message}") }
+    }
+
+    // 정리 실패가 해제·교체를 막지 않게 한다 — 남은 알림은 7일 보관 기간이 지나면 사라진다(E1).
+    private suspend fun purgeGuardianInbox(guardianUserId: String, elderUserId: String) {
+        runCatching { notificationService.purgeGuardianInbox(guardianUserId, elderUserId) }
+            .onFailure { e -> log.warn("보호자 알림함 정리 실패 — guardian=$guardianUserId elder=$elderUserId cause=${e.message}") }
+    }
+
+    // 기록 실패가 연결 성립·해제를 막지 않도록 격리하고 실패 사실만 남긴다(UserService.recordSecurityEvent와 같은 정책).
+    private suspend fun recordPairingEvent(actorUserId: String, targetUserId: String, type: SecurityEventType) {
+        runCatching {
+            loginHistoryRepository.save(
+                LoginHistory(historyId = "", userId = actorUserId, eventType = type, targetUserId = targetUserId)
+            )
+        }.onFailure { e ->
+            log.error("페어링 이벤트 기록 실패 — actor={}, target={}, event={}: {}", actorUserId, targetUserId, type, e.message, e)
+        }
     }
 
     // RateLimiter.requireAllowed와 동일한 래핑 정책을 common/util/RedisExt.kt의 guardRedis로 공유한다 —

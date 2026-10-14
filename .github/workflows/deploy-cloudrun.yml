@@ -165,6 +165,7 @@ jobs:
           register "deletion-retry"        "0 * * * *"
           register "retention-backfill"    "30 3 * * *"
           register "live-sweep"            "* * * * *"
+          register "fall-escalation"       "*/5 * * * *"
 
   # ────────────────────────────────────────────────────────────────────────────
   # 2. Python AI 배포 (internal only, Kotlin URL 을 env로 주입)
