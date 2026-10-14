@@ -14,7 +14,7 @@ import java.time.LocalDateTime
  * 사용자당 가장 최근 이벤트만 대상으로 삼아, 6시간 danger_cd로 새 이벤트가 계속 생겨도
  * 리마인더가 중복으로 쌓이지 않게 한다(오래된 이벤트는 새 이벤트가 그 자리를 대체).
  *
- * 발송 직전 [FallLogRepository.claimReminder]가 트랜잭션으로 재확인하므로, 이 스케줄러의
+ * 발송 직전 [FallLogRepository.claimReminder]가 트랜잭션으로 재확인하므로, 이 잡의
  * 최초 조회 결과와 실제 발송 사이에 보호자가 확인했거나 다른 실행이 먼저 처리했어도 중복 발송되지 않는다.
  *
  * Cloud Scheduler가 5분마다 `POST /internal/jobs/fall-escalation`으로 호출한다(E6-1). 이전에는 앱 내부
@@ -22,7 +22,7 @@ import java.time.LocalDateTime
  * Cloud Scheduler는 이전 실행이 끝나기 전에도 다음 트리거를 보내지만, 겹쳐 실행돼도 위 트랜잭션이 중복 발송을 막는다.
  */
 @Component
-class FallLogEscalationScheduler(
+class FallLogEscalationJob(
     private val fallLogRepository: FallLogRepository,
     private val notificationService: NotificationService,
     private val realtimeDataRepository: RealtimeDataRepository

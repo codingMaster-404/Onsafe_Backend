@@ -87,10 +87,10 @@ class FallLogRepository(
         return 1L
     }
 
-    /** 미확인 위험(위험) 레벨 이벤트 조회 — 에스컬레이션 스케줄러 후보 목록.
+    /** 미확인 위험(위험) 레벨 이벤트 조회 — 에스컬레이션 잡 후보 목록.
      * Firestore 복합 인덱스(is_confirmed ASC, score ASC) 필요 — Firestore 콘솔에 이미 사용 설정되어 있으며
      * firestore.indexes.json에도 동일하게 정의해 IaC로 관리한다. 인덱스가 없어지면 이 쿼리가 예외를 던지고
-     * FallLogEscalationScheduler가 이를 조용히 삼켜 로그만 남기므로, 콘솔에서 실수로 삭제하지 않도록 주의.
+     * FallLogEscalationJob이 이를 조용히 삼켜 로그만 남기므로, 콘솔에서 실수로 삭제하지 않도록 주의.
      * timestamp 하한은 range 필터 중복 제약(Firestore는 필드당 range 필터 1개만 허용) 때문에 인메모리에서 거른다. */
     suspend fun findUnconfirmedDangerLogs(after: LocalDateTime): List<FallLog> =
         col.whereEqualTo("is_confirmed", false)

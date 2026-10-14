@@ -13,7 +13,7 @@ import java.time.LocalDateTime
  * 직접 업로드(#14) + 완료 콜백(#15) 경로에서 콜백이 유실된 경우를 보정한다.
  * video_url이 비어있는 위험(위험) 레벨 로그를 주기적으로 훑어 GCS에 실제 객체가 있는지 재확인하고,
  * 있으면 video_url을 채운다. 아직 업로드 전이거나 영구 실패한 로그는 GRACE_PERIOD 이전이라 건너뛰거나
- * LOOKBACK_WINDOW를 넘겨 대상에서 자연히 빠진다(FallLogEscalationScheduler와 동일한 상한 방식).
+ * LOOKBACK_WINDOW를 넘겨 대상에서 자연히 빠진다(FallLogEscalationJob과 동일한 상한 방식).
  */
 @Component
 class FallLogVideoReconciliationJob(
