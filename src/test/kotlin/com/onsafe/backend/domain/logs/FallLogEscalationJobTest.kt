@@ -4,7 +4,7 @@ import com.onsafe.backend.domain.camera.model.entity.RealtimeData
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
-import com.onsafe.backend.domain.logs.service.FallLogEscalationScheduler
+import com.onsafe.backend.domain.logs.service.FallLogEscalationJob
 import com.onsafe.backend.domain.notification.service.NotificationService
 import io.mockk.Runs
 import io.mockk.coEvery
@@ -19,12 +19,12 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.time.LocalDateTime
 
-class FallLogEscalationSchedulerTest {
+class FallLogEscalationJobTest {
 
     private val fallLogRepository: FallLogRepository = mockk()
     private val notificationService: NotificationService = mockk()
     private val realtimeDataRepository: RealtimeDataRepository = mockk()
-    private lateinit var scheduler: FallLogEscalationScheduler
+    private lateinit var job: FallLogEscalationJob
 
     private fun log(logId: String, userId: String, minutesAgo: Long) = FallLog(
         logId = logId,
@@ -38,7 +38,7 @@ class FallLogEscalationSchedulerTest {
 
     @BeforeEach
     fun setUp() {
-        scheduler = FallLogEscalationScheduler(fallLogRepository, notificationService, realtimeDataRepository)
+        job = FallLogEscalationJob(fallLogRepository, notificationService, realtimeDataRepository)
         // 기본은 카메라 온라인(방금 heartbeat) — 오프라인 문구 케이스만 각 테스트에서 덮어쓴다.
         coEvery { realtimeDataRepository.findByUserId(any()) } returns RealtimeData(userId = "any", lastHeartbeatAt = LocalDateTime.now())
     }
@@ -58,7 +58,7 @@ class FallLogEscalationSchedulerTest {
             )
         } just Runs
 
-        scheduler.run()
+        job.run()
 
         coVerify(exactly = 1) { fallLogRepository.claimReminder("recent", any()) }
         coVerify(exactly = 0) { fallLogRepository.claimReminder("old", any()) }
@@ -73,7 +73,7 @@ class FallLogEscalationSchedulerTest {
         coEvery { fallLogRepository.findUnconfirmedDangerLogs(any()) } returns listOf(candidate)
         coEvery { fallLogRepository.claimReminder("log1", any()) } returns null
 
-        scheduler.run()
+        job.run()
 
         coVerify(exactly = 0) {
             notificationService.notifyElderAndGuardians(
@@ -100,7 +100,7 @@ class FallLogEscalationSchedulerTest {
             )
         } just Runs
 
-        scheduler.run()
+        job.run()
 
         assertEquals("userC", elderIdSlot.captured)
         assertEquals("log2", logIdSlot.captured)
@@ -124,7 +124,7 @@ class FallLogEscalationSchedulerTest {
             )
         } just Runs
 
-        scheduler.run()
+        job.run()
 
         coVerify(exactly = 1) { fallLogRepository.claimReminder("a1", any()) }
         coVerify(exactly = 1) { fallLogRepository.claimReminder("b1", any()) }
@@ -144,7 +144,7 @@ class FallLogEscalationSchedulerTest {
             )
         } just Runs
 
-        scheduler.run()
+        job.run()
 
         return bodies.single()
     }
@@ -154,14 +154,14 @@ class FallLogEscalationSchedulerTest {
         coEvery { realtimeDataRepository.findByUserId("userD") } returns
             RealtimeData(userId = "userD", lastHeartbeatAt = LocalDateTime.now().minusMinutes(10))
 
-        assertEquals(FallLogEscalationScheduler.OFFLINE_GUARDIAN_BODY, runAndCaptureGuardianBody())
+        assertEquals(FallLogEscalationJob.OFFLINE_GUARDIAN_BODY, runAndCaptureGuardianBody())
     }
 
     @Test
     fun `heartbeat 기록이 없어도 오프라인으로 본다`() = runTest {
         coEvery { realtimeDataRepository.findByUserId("userD") } returns null
 
-        assertEquals(FallLogEscalationScheduler.OFFLINE_GUARDIAN_BODY, runAndCaptureGuardianBody())
+        assertEquals(FallLogEscalationJob.OFFLINE_GUARDIAN_BODY, runAndCaptureGuardianBody())
     }
 
     @Test

@@ -18,7 +18,7 @@ import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.camera.model.entity.RiskLevel
 import com.onsafe.backend.domain.live.service.LiveSessionTerminator
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
-import com.onsafe.backend.domain.logs.service.FallLogEscalationScheduler
+import com.onsafe.backend.domain.logs.service.FallLogEscalationJob
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.service.NotificationService
 import com.onsafe.backend.domain.settings.model.dto.LiveVideoSettingsRequest
@@ -373,7 +373,7 @@ class GuardianService(
         val link = guardianLinkRepository.find(userId, counterpartUserId)
             ?: guardianLinkRepository.find(counterpartUserId, userId)
             ?: throw BusinessException(ErrorCode.PAIRING_NOT_FOUND)
-        val windowStart = LocalDateTime.now().minus(FallLogEscalationScheduler.LOOKBACK_WINDOW)
+        val windowStart = LocalDateTime.now().minus(FallLogEscalationJob.LOOKBACK_WINDOW)
         val since = if (link.createdAt > windowStart) link.createdAt else windowStart
         val count = fallLogRepository.findRecentByUserId(link.elderUserId, since = since)
             .count { !it.isConfirmed && it.score > RiskLevel.DANGER_THRESHOLD }
