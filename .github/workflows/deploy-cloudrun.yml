@@ -216,6 +216,8 @@ jobs:
           docker push "$IMAGE_URI:latest"
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
+      # --timeout은 WebSocket(/ws/stream) 연결에도 적용된다 — 상한 3600초. 그보다 길게 붙어 있으면
+      # Cloud Run이 끊으므로 앱이 재연결한다(카메라 스트리밍 B1).
       - name: Deploy Python AI to Cloud Run (internal)
         run: |
           gcloud run deploy ${{ env.PYTHON_SERVICE }} \
@@ -232,7 +234,7 @@ jobs:
             --cpu 2 \
             --min-instances 0 \
             --max-instances 5 \
-            --timeout 600 \
+            --timeout 3600 \
             --set-env-vars "TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_URL=redis://${{ vars.REDIS_HOST }}:6379,KOTLIN_INTERNAL_BASE=${{ steps.kotlin_url.outputs.url }}" \
             --set-secrets "JWT_SECRET=JWT_SECRET:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest" \
             --quiet
