@@ -5,6 +5,7 @@ import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.user.model.entity.User
 import com.onsafe.backend.domain.user.repository.UserRepository
 import com.onsafe.backend.domain.internal.model.dto.SaveFallLogRequest
+import com.onsafe.backend.domain.internal.model.dto.UpdateRealtimeRequest
 import com.onsafe.backend.domain.internal.service.InternalService
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
@@ -180,5 +181,27 @@ class InternalServiceTest {
         internalService.saveFallLog(baseRequest.copy(isConfirmed = false))
 
         assertFalse(savedSlot.captured.isConfirmed)
+    }
+
+    // ── 점수 갱신(/internal/realtime) ─────────────────────────────
+
+    @Test
+    fun `점수 갱신은 점수 필드만 부분 갱신하고 문서를 읽어 덮어쓰지 않는다`() = runTest {
+        internalService.updateRealtime(UpdateRealtimeRequest(userId = "testUser", score = 42f, level = "주의"))
+
+        coVerify(exactly = 1) { realtimeDataRepository.updateScore("testUser", 42f, "주의") }
+        coVerify(exactly = 0) { realtimeDataRepository.findByUserId(any()) }
+        coVerify(exactly = 0) { realtimeDataRepository.save(any()) }
+    }
+
+    @Test
+    fun `보호자가 없거나 계정이 없으면 점수를 저장하지 않는다`() = runTest {
+        coEvery { guardianLinkRepository.existsByElder("lonely") } returns false
+        internalService.updateRealtime(UpdateRealtimeRequest(userId = "lonely", score = 10f, level = "정상"))
+
+        coEvery { userRepository.findByUserId("gone") } returns null
+        internalService.updateRealtime(UpdateRealtimeRequest(userId = "gone", score = 10f, level = "정상"))
+
+        coVerify(exactly = 0) { realtimeDataRepository.updateScore(any(), any(), any()) }
     }
 }

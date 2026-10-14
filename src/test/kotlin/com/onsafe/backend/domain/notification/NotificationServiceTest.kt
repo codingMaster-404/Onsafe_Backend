@@ -332,4 +332,42 @@ class NotificationServiceTest {
         assertEquals(0, delivered)
         verify(exactly = 0) { FirebaseMessaging.getInstance() }
     }
+
+    // ── 감지 중단·재개 알림(카메라 스트리밍 B5) ─────────────────────
+
+    private fun stubGuardians(vararg guardianIds: String) {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns guardianIds.toList()
+        guardianIds.forEach { id ->
+            coEvery { userRepository.findByUserId(id) } returns baseUser.copy(userId = id, name = "보호자")
+            coEvery { fcmTokenRepository.findAll(id) } returns emptyList()
+        }
+    }
+
+    @Test
+    fun `감지 중단 알림 - 보호자 전원에게 피보호자 이름으로 보낸다`() = runTest {
+        stubGuardians("g1", "g2")
+
+        notificationService.notifyGuardiansStreamDown("testUser")
+
+        listOf("g1", "g2").forEach { id ->
+            coVerify(exactly = 1) {
+                notificationRepository.save(match {
+                    it.userId == id && it.title == "낙상 감지 중단" && it.body.startsWith("[홍길동]")
+                })
+            }
+        }
+    }
+
+    @Test
+    fun `감지 재개 알림 - 보호자에게 보내고 보호자가 없으면 아무것도 보내지 않는다`() = runTest {
+        stubGuardians("g1")
+        notificationService.notifyGuardiansStreamRecovered("testUser")
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.title == "낙상 감지 재개" }) }
+
+        coEvery { guardianLinkRepository.findGuardiansOf("lonely") } returns emptyList()
+        coEvery { userRepository.findByUserId("lonely") } returns baseUser.copy(userId = "lonely")
+        notificationService.notifyGuardiansStreamRecovered("lonely")
+        coVerify(exactly = 1) { notificationRepository.save(any()) }
+    }
 }
