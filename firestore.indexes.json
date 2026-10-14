@@ -25,6 +25,14 @@
       ]
     },
     {
+      "collectionGroup": "realtime_data",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "is_online", "order": "ASCENDING" },
+        { "fieldPath": "last_heartbeat_at", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "login_history",
       "queryScope": "COLLECTION",
       "fields": [

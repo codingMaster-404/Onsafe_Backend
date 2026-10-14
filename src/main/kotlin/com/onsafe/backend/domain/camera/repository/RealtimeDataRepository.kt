@@ -2,6 +2,7 @@ package com.onsafe.backend.domain.camera.repository
 
 import com.google.cloud.firestore.DocumentSnapshot
 import com.google.cloud.firestore.Firestore
+import com.google.cloud.firestore.SetOptions
 import com.onsafe.backend.common.util.await
 import com.onsafe.backend.common.util.deleteInBatches
 import com.onsafe.backend.common.util.toLocalDateTime
@@ -23,6 +24,20 @@ class RealtimeDataRepository(private val firestore: Firestore) {
     suspend fun save(data: RealtimeData): RealtimeData {
         col.document(data.userId).set(data.toMap()).await()
         return data
+    }
+
+    // AI 점수 갱신 진입점(/internal/realtime). 스트리밍 중 초당 수 회 호출되므로 읽고-복사-덮어쓰기를 하면
+    // 그 사이에 들어온 워치독 쓰기(감지 중단 상태 비움 등)를 이전 값으로 되돌린다 — 점수 3필드만 merge 한다.
+    // 문서가 없으면 이 3필드로 새로 만든다(나머지 필드는 읽을 때 기본값).
+    suspend fun updateScore(userId: String, score: Float, level: String) {
+        col.document(userId).set(
+            mapOf(
+                "score" to score,
+                "level" to level,
+                "updated_at" to LocalDateTime.now().toTimestamp(),
+            ),
+            SetOptions.merge()
+        ).await()
     }
 
     /**
@@ -68,19 +83,42 @@ class RealtimeDataRepository(private val firestore: Firestore) {
     }
 
     // 워치독 잡이 부르는 오프라인 후보 조회. is_online = true 인데 last_heartbeat_at 이 cutoff 이전인
-    // 문서들. Firestore 복합 인덱스가 필요할 수 있어 firestore.indexes.json 에 등록해야 한다.
+    // 문서들. 등호+다른 필드 범위 조건이라 복합 인덱스 (is_online, last_heartbeat_at) 가 필요하다
+    // — firestore.indexes.json 에 등록(없으면 운영에서 FAILED_PRECONDITION 으로 쿼리 실패).
     suspend fun findOfflineCandidates(cutoff: LocalDateTime, limit: Int = 500): List<RealtimeData> =
         col.whereEqualTo("is_online", true)
             .whereLessThan("last_heartbeat_at", cutoff.toTimestamp())
             .limit(limit)
             .get().await().documents.map { it.toRealtimeData() }
 
+    // 워치독의 감지 중단 검사 대상 — heartbeat 가 cutoff 이후에 온(앱이 살아 있는) 문서들.
+    // findOfflineCandidates 와 같은 (is_online, last_heartbeat_at) 복합 인덱스를 쓴다.
+    suspend fun findOnlineCandidates(cutoff: LocalDateTime, limit: Int = 500): List<RealtimeData> =
+        col.whereEqualTo("is_online", true)
+            .whereGreaterThanOrEqualTo("last_heartbeat_at", cutoff.toTimestamp())
+            .limit(limit)
+            .get().await().documents.map { it.toRealtimeData() }
+
     // 오프라인 판정을 반영한다. 알림을 이미 보낸 시각을 기록해 재알림을 억제.
+    // 감지 중단 상태도 함께 비운다 — 앱이 꺼진 동안은 오프라인 알림이 대신하고, 복구 후에는
+    // 감지 중단을 처음부터 다시 판정해 "감지 재개" 알림이 "카메라 다시 온라인"과 겹치지 않게 한다.
     suspend fun markOffline(userId: String, notifiedAt: LocalDateTime) {
         col.document(userId).update(
             mapOf(
                 "is_online" to false,
                 "last_offline_notified_at" to notifiedAt.toTimestamp(),
+                "stream_down_detected_at" to null,
+                "last_stream_down_notified_at" to null,
+            )
+        ).await()
+    }
+
+    // 감지 중단 상태 갱신(B5). 두 필드만 부분 갱신한다 — score·heartbeat 필드는 다른 흐름이 쓴다.
+    suspend fun updateStreamDown(userId: String, detectedAt: LocalDateTime?, notifiedAt: LocalDateTime?) {
+        col.document(userId).update(
+            mapOf(
+                "stream_down_detected_at" to detectedAt?.toTimestamp(),
+                "last_stream_down_notified_at" to notifiedAt?.toTimestamp(),
             )
         ).await()
     }
@@ -94,6 +132,8 @@ class RealtimeDataRepository(private val firestore: Firestore) {
         isOnline = getBoolean("is_online") ?: false,
         powerSaveMode = getBoolean("power_save_mode") ?: false,
         lastOfflineNotifiedAt = getTimestamp("last_offline_notified_at")?.toLocalDateTime(),
+        streamDownDetectedAt = getTimestamp("stream_down_detected_at")?.toLocalDateTime(),
+        lastStreamDownNotifiedAt = getTimestamp("last_stream_down_notified_at")?.toLocalDateTime(),
     )
 
     private fun RealtimeData.toMap() = mapOf(
@@ -104,5 +144,7 @@ class RealtimeDataRepository(private val firestore: Firestore) {
         "is_online" to isOnline,
         "power_save_mode" to powerSaveMode,
         "last_offline_notified_at" to lastOfflineNotifiedAt?.toTimestamp(),
+        "stream_down_detected_at" to streamDownDetectedAt?.toTimestamp(),
+        "last_stream_down_notified_at" to lastStreamDownNotifiedAt?.toTimestamp(),
     )
 }

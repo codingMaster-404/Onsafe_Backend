@@ -304,6 +304,50 @@ class NotificationService(
         }
     }
 
+    // 카메라 앱은 켜져 있는데(heartbeat 정상) WS 프레임이 안 들어올 때(카메라 스트리밍 B5). HeartbeatWatchdogJob 이 호출.
+    // 오프라인 알림과 같이 보호자에게만 보낸다 — 본인 앱은 이미 화면에 연결 실패를 보여 준다.
+    suspend fun notifyGuardiansStreamDown(elderUserId: String) =
+        notifyGuardiansOfCamera(
+            elderUserId, event = "camera_stream_down", title = "낙상 감지 중단",
+            body = { name -> "[$name] 카메라는 켜져 있지만 낙상 감지가 멈췄습니다. 카메라 화면을 확인해주세요." }
+        )
+
+    suspend fun notifyGuardiansStreamRecovered(elderUserId: String) =
+        notifyGuardiansOfCamera(
+            elderUserId, event = "camera_stream_recovered", title = "낙상 감지 재개",
+            body = { name -> "[$name] 낙상 감지가 다시 동작합니다." }
+        )
+
+    // 보호자 전원 발송 공통부. 개별 발송 실패는 격리한다 — 한 명 실패가 나머지 보호자 발송을 막지 않는다.
+    private suspend fun notifyGuardiansOfCamera(
+        elderUserId: String,
+        event: String,
+        title: String,
+        body: (elderName: String) -> String,
+    ) {
+        val elderName = runCatching { userRepository.findByUserId(elderUserId) }.getOrNull()?.name ?: elderUserId
+        val guardianIds = runCatching { guardianLinkRepository.findGuardiansOf(elderUserId) }
+            .onFailure { e -> log.warn("보호자 목록 조회 실패 (elderUserId: $elderUserId): ${e.message}") }
+            .getOrDefault(emptyList())
+        if (guardianIds.isEmpty()) return
+        coroutineScope {
+            guardianIds.map { guardianId ->
+                async {
+                    runCatching {
+                        sendNotification(
+                            NotificationRequest(
+                                userId = guardianId,
+                                title = title,
+                                body = body(elderName),
+                                data = mapOf("event" to event, "elder_user_id" to elderUserId)
+                            )
+                        )
+                    }.onFailure { e -> log.warn("$event 알림 실패 (guardianId: $guardianId): ${e.message}") }
+                }
+            }.awaitAll()
+        }
+    }
+
     suspend fun getNotifications(userId: String): List<NotificationLogResponse> =
         notificationRepository.findRecentByUserId(userId).map { NotificationLogResponse.from(it) }
 

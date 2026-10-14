@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased] - feat/camera-streaming-back (2026-10-13)
+
+### 카메라 스트리밍 재연결 지원 — 종료 코드·버퍼 초기화·감지 중단 알림 (API 스펙 v4.17)
+
+**변경 파일:** `deploy-cloudrun.yml`, `app/domain/camera/router.py`, `app/ai/engine.py`, `app/ai/buffer.py`, `RealtimeData.kt`, `RealtimeDataRepository.kt`, `StreamAliveStore.kt`(신규), `HeartbeatWatchdogJob.kt`, `NotificationService.kt`, `InternalService.kt`, `firestore.indexes.json`, `HeartbeatWatchdogJobTest.kt`(신규), `NotificationServiceTest.kt`, `InternalServiceTest.kt`, `v4.0_onsafe_api_spec.md`
+
+#### Added
+- **감지 중단 알림**: Python이 WS 프레임을 받는 동안 Redis `stream:alive:{user_id}`(TTL 90초, 연결당 30초마다 갱신)를 남기고, `heartbeat-watchdog`가 heartbeat는 살아 있는데 이 키가 없는 사용자를 2회 연속(약 5~10분) 확인하면 보호자에게 FCM `camera_stream_down`("낙상 감지 중단") 1회, 키가 돌아오면 `camera_stream_recovered`("낙상 감지 재개"). `realtime_data`에 `stream_down_detected_at`·`last_stream_down_notified_at`, Kotlin `StreamAliveStore`(MGET 1회)
+- **기기 상태 초기화**: `engine.claim_device`·`release_device` — `init`마다 그 기기의 프레임 윈도우·STRIDE 카운터·점수 이력을 비우고 연결 종료 시 삭제. 같은 기기로 겹친 연결은 마지막 `init` 연결만 정리 권한을 가진다
+- **Firestore 인덱스** `realtime_data (is_online, last_heartbeat_at)` — 워치독 오프라인 쿼리에 필요했지만 누락돼 있었다(운영에서 `FAILED_PRECONDITION`으로 오프라인 알림이 나가지 않았을 수 있음). 감지 중단 쿼리도 사용
+
+#### Changed
+- **`WS /ws/stream` 종료 코드**: 연결을 먼저 수락한 뒤 `4001`(만료)·`4003`(토큰 없음·위조·access 아님·로그아웃·무효화, 연결 중 재확인 포함)·`1011`(Redis 장애)로 닫는다. 이전에는 수락 전에 `1008`/`1011`로 닫아 앱이 HTTP 403만 받았다. 토큰 쿼리 파라미터는 선택(없으면 `4003`)
+- Python Cloud Run `--timeout` 600 → 3600초 (WS가 10분마다 끊기던 것 → 1시간)
+- `HeartbeatWatchdogJob.run()` = `checkOffline` + `checkStreamDown` — 오프라인 후보가 없어도 감지 중단 검사를 한다. `markOffline`이 감지 중단 상태도 비운다
+- `POST /internal/realtime`(`InternalService.updateRealtime`)이 읽고-복사-`set` 대신 `RealtimeDataRepository.updateScore`로 `score`·`level`·`updated_at`만 merge — 스트리밍 중 초당 수 회 전체 덮어쓰기가 워치독이 비운 감지 중단 상태를 되살려 "낙상 감지 재개" 알림이 중복될 수 있었다
+- 주석 정정: 워치독의 "복구 감지 미구현"(구현돼 있음), `router.py`의 "앱에 자동 재연결 없음" 근거
+
+#### Deployment (주의)
+- **구버전 앱 호환 안 됨** — `4001`·`4003`을 모르는 앱은 연결 시점 실패 시 "연결 중"에 머물고, 연결 중 무효화 시 로그아웃 대신 "연결 끊김"이 된다. 프론트 짝 작업(백오프 재연결·코드별 처리·재연결 전 refresh)과 **서버·앱 동시 배포**
+- 인덱스는 배포 워크플로가 적용 — 생성 완료 전에는 워치독 쿼리가 실패할 수 있다(로그만, 알림 없음)
+- 새 Redis 키 `stream:alive:*`(TTL 90초), 새 FCM event 2종(알림 OFF면 기존처럼 FCM 생략·알림함 저장, 7일 보관)
+- 재연결 직후 약 1초(30프레임)는 추론 결과 없음
+- 운영 접속 경로 미확인(K5) — Python은 `--no-allow-unauthenticated`인데 앱은 `wss://api.neulbom.com/ws/stream`으로 IAM 토큰 없이 접속한다. 로드밸런서 구성(레포에 없음)을 배포 전 콘솔에서 확인
+
 ## [Unreleased] - feat/live-video-back (2026-10-07)
 
 ### 보호자 실시간 영상(LIVE) — LiveKit Cloud, 요청형 (API 스펙 v4.16)

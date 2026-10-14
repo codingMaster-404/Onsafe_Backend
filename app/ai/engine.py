@@ -152,6 +152,37 @@ def _smooth_score(device_id: str, timestamp: float, instant_score: float) -> flo
     return sum(recent) / len(recent) if recent else instant_score
 
 
+# ── 연결 단위 기기 상태 초기화 (카메라 스트리밍 B3·B4) ──────────────────────────
+# 위 세 딕셔너리는 기기별로 쌓이기만 했다. 앱은 연결(init)마다 timestamp를 0부터 다시 세므로
+# 이전 연결의 프레임·점수가 남아 있으면 윈도우 안에서 시간이 역행해 dt·각속도가 틀어지고,
+# 끊긴 기기의 상태는 인스턴스가 살아 있는 동안 계속 남는다.
+# 같은 기기로 연결이 겹치면(이전 연결이 아직 안 닫힘) 이전 연결의 종료 처리가 새 연결의 상태를
+# 지우지 않도록, 마지막으로 init한 연결만 소유자로 기록하고 소유자일 때만 정리한다.
+_device_owners: dict[str, object] = {}
+
+
+def _drop_device_state(device_id: str) -> None:
+    _frame_buffers.pop(device_id, None)
+    _frame_counts.pop(device_id, None)
+    _score_history.pop(device_id, None)
+
+
+def claim_device(device_id: str) -> object:
+    """새 연결의 init 시점에 호출 — 기기 상태를 비우고 이 연결을 소유자로 기록한 토큰을 돌려준다."""
+    _drop_device_state(device_id)
+    owner = object()
+    _device_owners[device_id] = owner
+    return owner
+
+
+def release_device(device_id: str, owner: object) -> None:
+    """연결 종료 시점에 호출 — 이 연결이 아직 소유자일 때만 기기 상태를 지운다."""
+    if _device_owners.get(device_id) is not owner:
+        return
+    del _device_owners[device_id]
+    _drop_device_state(device_id)
+
+
 # ── 입력 커버리지 게이트 ───────────────────────────────────────────────────────
 
 def _coverage_gate(df: pd.DataFrame) -> bool:
