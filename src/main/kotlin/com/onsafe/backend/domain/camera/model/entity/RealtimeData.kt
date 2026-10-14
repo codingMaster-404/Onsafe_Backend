@@ -16,4 +16,9 @@ data class RealtimeData(
     // 오프라인 알림을 보낸 마지막 시각. 재알림 스팸을 막기 위해 첫 오프라인 감지 시 1회만 발송하고,
     // 복구 후 다시 오프라인이 되기 전까지는 재발송하지 않는다(null 로 리셋됨).
     val lastOfflineNotifiedAt: LocalDateTime? = null,
+    // 앱은 켜져 있는데(heartbeat 정상) WS 프레임이 안 들어오는 "감지 중단" 상태(카메라 스트리밍 B5).
+    // 처음 발견한 시각을 남기고 다음 워치독 실행에서도 그대로면 알린다 — 촬영 시작 전·재연결 중 오탐 방지.
+    val streamDownDetectedAt: LocalDateTime? = null,
+    // 감지 중단 알림을 보낸 시각. 프레임이 다시 들어오면 복구 알림 후 null 로 돌린다.
+    val lastStreamDownNotifiedAt: LocalDateTime? = null,
 )

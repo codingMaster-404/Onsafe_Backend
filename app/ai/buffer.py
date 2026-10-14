@@ -6,6 +6,8 @@ Redis 키 역할:
   caution_cd:{user_id}   TTL 300s   WARNING 중복 방지 쿨다운
   danger_cd:{user_id}    TTL 21600s CRITICAL(위험)·fall 이벤트 중복 방지 쿨다운 (6시간)
   score_floor:{user_id}  TTL 900s   CRITICAL 진입 시 점수 하락 방지용 최고값 유지 (15분, sticky)
+  stream:alive:{user_id} TTL 90s    WS 프레임 수신 생존 신호 — Kotlin HeartbeatWatchdogJob이 "감지 중단" 판정에 사용
+                                    (키 이름·TTL은 Kotlin StreamAliveStore와 함께 바꿔야 한다)
 
 프레임 카운터 / 추론 시작 판단은 engine.py의 _frame_buffers deque가 담당한다 (Method A).
 """
@@ -66,3 +68,14 @@ async def apply_score_floor(user_id: str, score: float, danger_threshold: float,
         return new_floor
 
     return floor if floor is not None else score
+
+
+STREAM_ALIVE_TTL_SECONDS = 90
+
+
+async def mark_stream_alive(user_id: str, ttl_seconds: int = STREAM_ALIVE_TTL_SECONDS) -> None:
+    """WS로 프레임이 들어오고 있다는 생존 신호를 남긴다(카메라 스트리밍 B5).
+    앱 heartbeat는 카메라 화면이 열려 있으면 WS와 무관하게 오므로, 실제 프레임 수신은 이 키로만 알 수 있다.
+    연결이 끊겨도 지우지 않고 TTL로 사라지게 둔다 — 같은 사용자의 다른 연결이 살아 있을 수 있다."""
+    r = get_redis()
+    await r.set(f"stream:alive:{user_id}", "1", ex=ttl_seconds)

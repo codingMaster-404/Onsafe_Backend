@@ -1,6 +1,5 @@
 package com.onsafe.backend.domain.internal.service
 
-import com.onsafe.backend.domain.camera.model.entity.RealtimeData
 import com.onsafe.backend.domain.camera.model.entity.RiskLevel
 import com.onsafe.backend.domain.camera.repository.RealtimeDataRepository
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
@@ -45,10 +44,8 @@ class InternalService(
             log.debug("guardian 없음 — realtime 저장 스킵 (userId={})", req.userId)
             return
         }
-        val existing = realtimeDataRepository.findByUserId(req.userId)
-        val data = existing?.copy(score = req.score, level = req.level)
-            ?: RealtimeData(userId = req.userId, score = req.score, level = req.level)
-        realtimeDataRepository.save(data)
+        // 점수 필드만 부분 갱신 — 통째로 덮어쓰면 워치독·heartbeat 가 그 사이 쓴 상태를 되돌린다.
+        realtimeDataRepository.updateScore(req.userId, req.score, req.level)
     }
 
     suspend fun saveFallLog(req: SaveFallLogRequest) {
