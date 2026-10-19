@@ -48,14 +48,17 @@ class InternalService(
         realtimeDataRepository.updateScore(req.userId, req.score, req.level)
     }
 
-    suspend fun saveFallLog(req: SaveFallLogRequest) {
+    // 반환값 = 실제로 저장했는지. 건너뛰어도 Python은 자기가 만든 log_id를 앱에 내려 주므로, 앱이 없는 기록에
+    // 영상을 올리려다 404를 받는다 — 컨트롤러가 이 값을 응답에 실어 Python이 log_id를 비우게 한다.
+    // 알림 실패는 notifySafe가 흡수하므로 저장만 됐으면 true다(기록이 있으니 영상을 올릴 수 있어야 한다).
+    suspend fun saveFallLog(req: SaveFallLogRequest): Boolean {
         if (!userExists(req.userId)) {
             log.info("계정 없음 — fall log 저장/알림 스킵 (userId={}, logId={})", req.userId, req.logId)
-            return
+            return false
         }
         if (!hasGuardian(req.userId)) {
             log.info("guardian 없음 — fall log 저장/알림 스킵 (userId={}, logId={})", req.userId, req.logId)
-            return
+            return false
         }
         fallLogRepository.save(
             FallLog(
@@ -97,6 +100,7 @@ class InternalService(
                 data = notifData
             )
         }
+        return true
     }
 
     // FCM 실패는 이력 저장과 독립적으로 처리 — 전송 실패해도 DB 저장은 항상 보장.

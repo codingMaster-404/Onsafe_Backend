@@ -3,6 +3,7 @@ package com.onsafe.backend.domain.internal.controller
 import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.common.security.InternalAuthGuard
 import com.onsafe.backend.domain.internal.model.dto.SaveFallLogRequest
+import com.onsafe.backend.domain.internal.model.dto.SaveFallLogResponse
 import com.onsafe.backend.domain.internal.model.dto.UpdateRealtimeRequest
 import com.onsafe.backend.domain.internal.service.InternalService
 import io.swagger.v3.oas.annotations.Operation
@@ -35,9 +36,13 @@ class InternalController(
     suspend fun saveFallLog(
         @RequestHeader(value = "X-Internal-Auth", required = false) auth: String?,
         @RequestBody req: SaveFallLogRequest
-    ): ApiResponse<Unit> {
+    ): ApiResponse<SaveFallLogResponse> {
         internalAuthGuard.require(auth)
-        internalService.saveFallLog(req)
-        return ApiResponse.ok("낙상 로그 저장 완료")
+        // 건너뛴 것도 정책상 정상 처리라 success=true를 유지하고, 판단은 data.saved로만 한다.
+        val saved = internalService.saveFallLog(req)
+        return ApiResponse.ok(
+            data = SaveFallLogResponse(saved = saved),
+            message = if (saved) "낙상 로그 저장 완료" else "낙상 로그 저장 건너뜀 (계정 없음 또는 연결된 보호자 없음)"
+        )
     }
 }
