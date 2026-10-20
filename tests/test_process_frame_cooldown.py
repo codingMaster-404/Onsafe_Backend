@@ -1,3 +1,4 @@
+import logging
 import time
 
 import pytest
@@ -5,6 +6,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app.ai import buffer
 from app.ai.engine import CRITICAL_THRESHOLD, WARNING_THRESHOLD
+from app.core.log_throttle import LogThrottle
 from app.domain.camera import service
 
 DANGER_SCORE = CRITICAL_THRESHOLD + 5
@@ -49,6 +51,7 @@ def frame(monkeypatch):
     monkeypatch.setattr(service, "_update_realtime", update_realtime)
     monkeypatch.setattr(service, "_save_fall_log", save_fall_log)
     monkeypatch.setattr(service, "_local_cooldowns", {})
+    monkeypatch.setattr(service, "_log_throttle", LogThrottle())
     return f
 
 
@@ -171,6 +174,20 @@ async def test_local_cooldown_prunes_expired_entries(broken_redis, frame):
     await frame()
 
     assert ("danger", "old-user") not in service._local_cooldowns
+
+
+async def test_redis_down_warnings_logged_once_per_kind(broken_redis, frame, caplog):
+    # 장애 중 추론마다 같은 경고가 쌓이지 않게 메시지 종류별로 60초에 1번만 남긴다(S14)
+    caplog.set_level(logging.WARNING, logger=service.__name__)
+    service._local_cooldowns.clear()
+
+    for _ in range(3):
+        await frame()
+        service._local_cooldowns.clear()  # 매번 쿨다운 확인까지 가게 한다
+
+    messages = [r.getMessage() for r in caplog.records]
+    for text in ("점수 하한 적용 실패", "점수 캐시 저장 실패", "danger 쿨다운 확인 실패"):
+        assert sum(text in m for m in messages) == 1, text
 
 
 async def test_redis_down_on_inference_error_path_returns_neutral(broken_redis, monkeypatch):

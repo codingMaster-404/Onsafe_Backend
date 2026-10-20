@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+from app.core.log_throttle import LogThrottle
 from app.domain.camera import service
 
 _RealAsyncClient = httpx.AsyncClient
@@ -82,3 +83,14 @@ async def test_request_uses_10s_timeout_and_keeps_contract(kotlin):
     assert set(json.loads(req.content)) == {
         "log_id", "device_id", "user_id", "score", "fall", "is_confirmed", "video_url",
     }
+
+
+async def test_realtime_failure_logged_once_per_interval(kotlin, caplog, monkeypatch):
+    # Kotlin 장애 중 추론마다 /internal/realtime 실패가 쌓이지 않게 한다(S14)
+    monkeypatch.setattr(service, "_log_throttle", LogThrottle())
+    kotlin.respond = httpx.ConnectError("connection refused")
+
+    for _ in range(3):
+        await service._update_realtime("u1", 50.0, "주의")
+
+    assert sum("/internal/realtime 호출 실패" in r.getMessage() for r in caplog.records) == 1
