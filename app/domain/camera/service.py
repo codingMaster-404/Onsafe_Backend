@@ -19,6 +19,7 @@ from app.ai.buffer import (
 from app.ai.engine import infer_landmarks_async, classify_level, WARNING_THRESHOLD, CRITICAL_THRESHOLD
 from app.core.config import settings
 from app.core.firebase import get_firestore
+from app.core.log_throttle import LogThrottle
 from app.core.storage import upload_video
 from app.domain.camera.schemas import StreamResponse
 
@@ -46,6 +47,10 @@ _COOLDOWNS = {
 # 보호자 알림이 나가지 않게 인스턴스 안에서라도 막는다. 인스턴스가 여러 개면 그 수만큼 알림이 갈 수 있다.
 _local_cooldowns: dict[tuple[str, str], float] = {}
 
+# Redis·Kotlin 장애 경고는 추론마다(사용자당 초당 약 6회) 반복되므로 메시지 종류별로 60초에 1번만 남긴다.
+# 장애는 모든 사용자에게 같이 나므로 사용자별로 나누지 않는다 — 로그의 user_id는 그때 처리하던 사용자다.
+_log_throttle = LogThrottle()
+
 
 async def process_frame(landmarks: list, timestamp: float, user_id: str, device_id: str) -> StreamResponse:
     result = await infer_landmarks_async(landmarks, device_id, timestamp)
@@ -57,7 +62,7 @@ async def process_frame(landmarks: list, timestamp: float, user_id: str, device_
         try:
             cached = await get_score(user_id)
         except RedisError as e:
-            logger.warning("직전 점수 조회 실패 user_id=%s: %s", user_id, e)
+            _log_throttle.log(logger, logging.WARNING, "get_score", "직전 점수 조회 실패 user_id=%s: %s", user_id, e)
             cached = None
         if cached:
             return StreamResponse(score=cached["score"], fall=False, level=cached["level"])
@@ -74,14 +79,14 @@ async def process_frame(landmarks: list, timestamp: float, user_id: str, device_
     try:
         score = await apply_score_floor(user_id, raw_score, CRITICAL_THRESHOLD)
     except RedisError as e:
-        logger.warning("점수 하한 적용 실패 — 원래 점수로 판정 user_id=%s: %s", user_id, e)
+        _log_throttle.log(logger, logging.WARNING, "score_floor", "점수 하한 적용 실패 — 원래 점수로 판정 user_id=%s: %s", user_id, e)
         score = raw_score
     level = classify_level(score)
 
     try:
         await save_score(user_id, score, level)
     except RedisError as e:
-        logger.warning("점수 캐시 저장 실패 user_id=%s: %s", user_id, e)
+        _log_throttle.log(logger, logging.WARNING, "save_score", "점수 캐시 저장 실패 user_id=%s: %s", user_id, e)
     # [중단 2026-09-16] 분석용 features 적재 — 읽는 코드가 어디에도 없어 중단했다(§4 C11).
     #   · 앱·Kotlin·AI 추론 어느 쪽도 이 데이터를 조회하지 않는다(전수 검색 확인).
     #   · 사용자당 최대 2000문서 × 50필드가 쌓이는데 관절 각도 시계열은 건강 관련 민감정보에 가깝다.
@@ -110,7 +115,10 @@ async def _save_event_with_cooldown(kind: str, user_id: str, device_id: str, sco
         acquired = await check(user_id)
         redis_ok = True
     except RedisError as e:
-        logger.warning("%s 쿨다운 확인 실패 — 메모리 쿨다운으로 판정 user_id=%s: %s", kind, user_id, e)
+        _log_throttle.log(
+            logger, logging.WARNING, f"cooldown_check:{kind}",
+            "%s 쿨다운 확인 실패 — 메모리 쿨다운으로 판정 user_id=%s: %s", kind, user_id, e,
+        )
         acquired = _acquire_local_cooldown(kind, user_id, ttl_seconds)
         redis_ok = False
     if not acquired:
@@ -122,7 +130,10 @@ async def _save_event_with_cooldown(kind: str, user_id: str, device_id: str, sco
             try:
                 await shorten(user_id)
             except RedisError as e:
-                logger.warning("%s 쿨다운 단축 실패 — 원래 기간 동안 재시도 안 됨 user_id=%s: %s", kind, user_id, e)
+                _log_throttle.log(
+                    logger, logging.WARNING, f"cooldown_shorten:{kind}",
+                    "%s 쿨다운 단축 실패 — 원래 기간 동안 재시도 안 됨 user_id=%s: %s", kind, user_id, e,
+                )
         else:
             _local_cooldowns[(kind, user_id)] = time.monotonic() + SAVE_RETRY_SECONDS
     return log_id
@@ -192,7 +203,7 @@ async def _update_realtime(user_id: str, score: float, level: str) -> None:
                 timeout=3.0,
             )
     except Exception as e:
-        logger.error("/internal/realtime 호출 실패 user_id=%s: %s", user_id, e)
+        _log_throttle.log(logger, logging.ERROR, "update_realtime", "/internal/realtime 호출 실패 user_id=%s: %s", user_id, e)
 
 
 async def _save_fall_log(user_id: str, device_id: str, score: float, fall: bool, video_bytes: bytes | None) -> str | None:
