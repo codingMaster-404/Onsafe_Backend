@@ -1,0 +1,8 @@
+# 로컬 테스트용 의존성 — 운영 이미지에는 들어가지 않는다(.dockerignore가 *.txt 제외).
+# 실행: pip install -r requirements-dev.txt && pytest
+-r requirements.txt
+
+pytest==9.1.1
+pytest-asyncio==1.4.0
+# Redis 없이 쿨다운·버퍼 동작(NX·TTL·DEL)을 검증한다
+fakeredis==2.40.0

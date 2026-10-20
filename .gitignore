@@ -225,7 +225,7 @@ application-prod.yml
 
 ### 프로젝트 문서 (작업용 txt) ###
 *.txt
-!requirements.txt
+!requirements*.txt
 
 ### Claude Code 로컬 설정 ###
 .claude/settings.local.json
