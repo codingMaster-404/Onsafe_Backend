@@ -6,6 +6,7 @@
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
@@ -106,9 +107,18 @@ async def process_frame(landmarks: list, timestamp: float, user_id: str, device_
     return StreamResponse(score=score, fall=fall, level=level, log_id=log_id)
 
 
+@dataclass(frozen=True)
+class FallLogSaveResult:
+    """_save_fall_log 결과 — 저장 (log_id, False) / Kotlin이 건너뜀 (None, False) / 실패 (None, True).
+    건너뜀(계정 없음·연결된 보호자 없음)은 다시 시도해도 같으므로 쿨다운을 그대로 둔다."""
+    log_id: str | None
+    retry: bool
+
+
 async def _save_event_with_cooldown(kind: str, user_id: str, device_id: str, score: float, fall: bool) -> str | None:
     """쿨다운을 잡은 경우에만 이벤트를 저장한다. 저장이 실패하면 쿨다운을 SAVE_RETRY_SECONDS로 줄여
     그 뒤 추론이 다시 저장하게 한다 — 실패한 이벤트가 쿨다운 기간(최대 6시간) 동안 묻히지 않도록.
+    Kotlin이 저장을 건너뛴 경우는 쿨다운을 그대로 둔다.
     Redis 오류 시에는 메모리 쿨다운으로 판정한다(중복 알림이 누락보다 낫다)."""
     check, shorten, ttl_seconds = _COOLDOWNS[kind]
     try:
@@ -124,8 +134,8 @@ async def _save_event_with_cooldown(kind: str, user_id: str, device_id: str, sco
     if not acquired:
         return None
 
-    log_id = await _save_fall_log(user_id, device_id, score, fall, video_bytes=None)
-    if log_id is None:
+    result = await _save_fall_log(user_id, device_id, score, fall, video_bytes=None)
+    if result.retry:
         if redis_ok:
             try:
                 await shorten(user_id)
@@ -136,7 +146,7 @@ async def _save_event_with_cooldown(kind: str, user_id: str, device_id: str, sco
                 )
         else:
             _local_cooldowns[(kind, user_id)] = time.monotonic() + SAVE_RETRY_SECONDS
-    return log_id
+    return result.log_id
 
 
 def _acquire_local_cooldown(kind: str, user_id: str, ttl_seconds: float) -> bool:
@@ -206,10 +216,11 @@ async def _update_realtime(user_id: str, score: float, level: str) -> None:
         _log_throttle.log(logger, logging.ERROR, "update_realtime", "/internal/realtime 호출 실패 user_id=%s: %s", user_id, e)
 
 
-async def _save_fall_log(user_id: str, device_id: str, score: float, fall: bool, video_bytes: bytes | None) -> str | None:
+async def _save_fall_log(user_id: str, device_id: str, score: float, fall: bool, video_bytes: bytes | None) -> FallLogSaveResult:
     """Kotlin /internal/fall-log에 저장을 위임한다.
-    2xx 응답일 때만 log_id를 돌려주고, 4xx·5xx·타임아웃·연결 실패는 None — 호출부가 쿨다운을 풀어
-    다음 추론이 다시 저장하게 하고, 앱이 없는 로그로 영상 업로드를 시도하지 않게 한다."""
+    실제로 저장됐을 때만 log_id를 돌려준다 — 앱이 없는 로그로 영상 업로드를 시도하지 않게.
+    4xx·5xx·타임아웃·연결 실패는 retry=True(호출부가 쿨다운을 줄여 다시 시도),
+    2xx지만 Kotlin이 저장을 건너뛰었으면(data.saved=false) retry=False."""
     log_id = str(uuid.uuid4())
 
     video_url: str | None = None
@@ -237,14 +248,28 @@ async def _save_fall_log(user_id: str, device_id: str, score: float, fall: bool,
             )
     except Exception as e:
         logger.error("/internal/fall-log 호출 실패 log_id=%s user_id=%s: %s", log_id, user_id, e)
-        return None
+        return FallLogSaveResult(log_id=None, retry=True)
     # httpx는 4xx·5xx에 예외를 내지 않는다 — 403(시크릿 불일치)·5xx도 여기서 실패로 본다
     if not resp.is_success:
         logger.error(
             "/internal/fall-log 저장 실패 status=%s log_id=%s user_id=%s body=%s",
             resp.status_code, log_id, user_id, resp.text[:200],
         )
-        return None
-    return log_id
+        return FallLogSaveResult(log_id=None, retry=True)
+    if not _kotlin_saved(resp):
+        logger.info("/internal/fall-log 저장 건너뜀(계정 없음 또는 연결된 보호자 없음) log_id=%s user_id=%s", log_id, user_id)
+        return FallLogSaveResult(log_id=None, retry=False)
+    return FallLogSaveResult(log_id=log_id, retry=False)
+
+
+def _kotlin_saved(resp: httpx.Response) -> bool:
+    """응답 본문 data.saved가 JSON false일 때만 저장 안 됨으로 본다.
+    필드가 없거나(구버전 Kotlin) 본문을 읽을 수 없으면 저장됨으로 본다 — 이미 저장된 기록을 다시 저장해 알림이 중복되지 않게."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return True
+    data = body.get("data") if isinstance(body, dict) else None
+    return not (isinstance(data, dict) and data.get("saved") is False)
 
 
