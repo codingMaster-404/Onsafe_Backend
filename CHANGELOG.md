@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased] - fix/fall-log-saved-flag-back (2026-10-20)
+
+### 낙상 기록 저장 여부 전달 — 저장을 건너뛴 기록에 log_id를 내려주지 않음 (API 스펙 v4.20)
+
+**변경 파일:** `InternalService.kt`, `InternalController.kt`, `SaveFallLogResponse.kt`(신규), `InternalServiceTest.kt`, `InternalControllerTest.kt`(신규), `app/domain/camera/service.py`, `tests/test_save_fall_log.py`, `tests/test_process_frame_cooldown.py`, `v4.0_onsafe_api_spec.md`
+
+#### Added
+- `POST /internal/fall-log` 응답 본문에 `data.saved`(boolean) — 계정 없음(탈퇴 직후)·연결된 보호자 없음으로 저장·알림을 건너뛰면 `false`, 문구 `낙상 로그 저장 건너뜀 (계정 없음 또는 연결된 보호자 없음)`. 상태 코드·`success`·경로·인증은 그대로
+- Python `FallLogSaveResult(log_id, retry)` — 저장 / Kotlin이 건너뜀 / 실패(재시도)를 구분
+
+#### Changed
+- `InternalService.saveFallLog`가 실제 저장 여부(`Boolean`)를 반환 — 알림 실패는 흡수하므로 저장됐으면 `true`
+- Python은 `data.saved`가 JSON `false`일 때만 건너뜀으로 보고 WS `result`의 `log_id`를 `null`로 보낸다. 쿨다운은 줄이지 않는다(다시 시도해도 결과가 같다). 필드가 없거나 본문을 읽을 수 없으면 저장된 것으로 본다
+- 이전에는 Python이 직접 만든 UUID를 앱에 내려 줘, 앱(`FallVideoUploader`)이 없는 기록으로 `upload-url`을 호출해 404를 받았다
+
+#### Deployment (주의)
+- Kotlin·Python 배포 순서 무관 — 구버전 Python은 본문을 읽지 않고, 새 Python은 필드가 없으면 저장된 것으로 본다
+- 앱 변경 없음 — `log_id`가 `null`이면 앱은 클립을 만들지 않는다
+- `/internal/fall-log` 응답 본문만 추가 — 경로·`X-Internal-Auth` 인증·외부 접근 조건은 그대로
+- `fix/fall-alert-reliability-back`(낙상 알림 신뢰성, v4.19) 위에 쌓은 브랜치 — 그 브랜치를 먼저 머지한다
+
 ## [Unreleased] - fix/fall-alert-reliability-back (2026-10-20)
 
 ### 낙상 알림 안정화 — 저장 실패 재시도·Redis 장애 판정·WS 입력 검증·연결 유지 (API 스펙 v4.19)
