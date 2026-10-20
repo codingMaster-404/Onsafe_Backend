@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased] - fix/fall-alert-reliability-back (2026-10-20)
+
+### 낙상 알림 안정화 — 저장 실패 재시도·Redis 장애 판정·WS 입력 검증·연결 유지 (API 스펙 v4.19)
+
+**변경 파일:** `app/ai/buffer.py`, `app/ai/engine.py`, `app/domain/camera/service.py`, `app/domain/camera/router.py`, `app/core/log_throttle.py`(신규), `app/core/config.py`, `.gitignore`, `pytest.ini`(신규), `requirements-dev.txt`(신규), `tests/`(신규 — `conftest.py`, `test_buffer_cooldown.py`, `test_save_fall_log.py`, `test_process_frame_cooldown.py`, `test_engine_input_guard.py`, `test_ws_stream.py`, `test_log_throttle.py`, `test_config.py`), `v4.0_onsafe_api_spec.md`
+
+#### Added
+- **쿨다운 단축** `shorten_caution_cooldown`·`shorten_danger_cooldown` — 낙상 기록 저장 실패 시 쿨다운 TTL을 30초(`SAVE_RETRY_SECONDS`)로 덮어써 30초 뒤 재시도. 쿨다운 기간 상수 `CAUTION_COOLDOWN_SECONDS`·`DANGER_COOLDOWN_SECONDS`
+- **메모리 쿨다운** — 쿨다운 확인 중 Redis 오류면 저장을 시도하고(fail-open) 프로세스 메모리로 같은 기간 반복 알림을 막음
+- **WS 입력 검증** — landmark 33개 모두 `x`·`y`·`z`·`v` 유한 숫자, `timestamp` 유한 숫자일 때만 버퍼에 넣음(아니면 그 프레임만 버림, 기기 연결당 경고 1회). 같은 `timestamp`는 버리고, 거꾸로 가면 그 기기 버퍼·카운터·점수 이력 초기화
+- **WS `error` 메시지 정의** — `init 먼저 전송 필요`(기존)·`잘못된 메시지 형식`·`프레임 처리 실패`. 모두 연결 유지
+- **`app/core/log_throttle.py`** — 키별 60초에 1번만 로그, 생략 건수를 다음 로그에 붙임
+- **Python 테스트** `tests/`(pytest·pytest-asyncio·fakeredis, `requirements-dev.txt`) — 70건
+
+#### Changed
+- `_save_fall_log`: **2xx만 성공**(이전에는 응답을 보지 않아 4xx·5xx에도 `log_id` 반환). 실패하면 `log_id` `None` → WS `log_id: null`. 타임아웃 3 → 10초(`/internal/realtime`은 3초 유지). 실패 로그에 상태 코드·본문 앞 200자
+- `process_frame`: 점수 하한·점수 캐시·직전 점수 조회의 Redis 오류를 잡아 알림 판정까지 진행(하한 없이 원래 점수)
+- WS 메시지 1건 처리 중 예외가 나도 연결을 끊지 않음(이전 1011 종료 → 앱 재연결 동안 감지 중단). 문자열이 아닌 `device_id`는 없는 것으로 처리
+- `stream:alive`를 `process_frame` 성공 뒤에만 기록 — 처리가 계속 실패하면 워치독이 감지 중단으로 판정
+- Redis 경고 5곳·`/internal/realtime` 실패 로그를 종류별 60초 1회로 제한
+- `Settings`가 `.env`의 모르는 키를 무시(`extra="ignore"`) — Kotlin과 같은 `.env`로 로컬 기동 가능
+
+#### Deployment (주의)
+- **앱 변경 불필요·배포 순서 무관** — 앱은 모르는 `type`(`error`)을 무시하고 `log_id`는 nullable. Kotlin 변경 없음
+- 새 환경변수·시크릿·Redis 키 없음(기존 쿨다운 키의 TTL만 실패 시 30초)
+- **알려진 한계**: Kotlin이 저장했는데 응답이 10초를 넘기면 30초 뒤 새 `log_id`로 다시 저장해 기록·보호자 알림이 2번 갈 수 있다. Redis 장애 중에는 Python 인스턴스 수만큼 알림이 갈 수 있다(누락보다 중복을 택함)
+- `tests/`는 CI에 연결하지 않았다 — CI는 `app/` 아래 테스트 파일만 찾는다. 로컬: `pip install -r requirements-dev.txt && pytest`
+- `fix/fall-log-saved-flag-back`(낙상 기록 저장 여부 전달)보다 **먼저 머지**
+
 ## [Unreleased] - feat/pairing-safety-back (2026-10-13)
 
 ### 페어링 안전성 묶음 — 해제 전 확인·알림함 정리·보안 이벤트·재알림 이전 (API 스펙 v4.18)
