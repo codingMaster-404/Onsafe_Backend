@@ -11,6 +11,7 @@ landmark JSON → 30프레임 슬라이딩 윈도우 → XGBoost 추론
 """
 import asyncio
 import logging
+import math
 from collections import deque
 from pathlib import Path
 
@@ -160,11 +161,15 @@ def _smooth_score(device_id: str, timestamp: float, instant_score: float) -> flo
 # 지우지 않도록, 마지막으로 init한 연결만 소유자로 기록하고 소유자일 때만 정리한다.
 _device_owners: dict[str, object] = {}
 
+# 잘못된 프레임 경고를 이미 남긴 기기 — 고장 난 클라이언트가 초당 30회 보내도 연결(또는 초기화)당 1회만 기록한다.
+_invalid_input_warned: set[str] = set()
+
 
 def _drop_device_state(device_id: str) -> None:
     _frame_buffers.pop(device_id, None)
     _frame_counts.pop(device_id, None)
     _score_history.pop(device_id, None)
+    _invalid_input_warned.discard(device_id)
 
 
 def claim_device(device_id: str) -> object:
@@ -474,18 +479,43 @@ def _center_descent_peak_velocity(buf: deque) -> float:
     return peak
 
 
+_LANDMARK_KEYS = ("x", "y", "z", "v")
+
+
+def _is_finite_number(value) -> bool:
+    # bool은 int의 하위 타입이라 따로 거른다. NaN·inf는 전처리(dt·보간)를 깨뜨린다.
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _is_valid_frame(landmarks, timestamp) -> bool:
+    """버퍼에 넣기 전 입력 형식 검증 — landmark 33개가 모두 x·y·z·v 유한 숫자를 갖고 timestamp도 유한 숫자인지.
+    좌표 범위는 보지 않는다(MediaPipe 좌표는 사람이 화면 밖으로 나가면 0~1을 벗어나는 게 정상)."""
+    if not _is_finite_number(timestamp):
+        return False
+    if not isinstance(landmarks, list) or len(landmarks) != 33:
+        return False
+    return all(
+        isinstance(lm, dict) and all(_is_finite_number(lm.get(k)) for k in _LANDMARK_KEYS)
+        for lm in landmarks
+    )
+
+
 def infer_landmarks(landmarks: list, device_id: str, timestamp: float) -> dict:
     """
     landmark JSON → 30프레임 윈도우 → XGBoost → 2초 구간 평활화
     → {"score": float, "fall": bool, "level": str|None, "features": dict, "status": str}
-    status: "ok"(추론 성공) / "warming"(윈도우 미달) / "skip"(STRIDE 미달·landmark 부족)
+    status: "ok"(추론 성공) / "warming"(윈도우 미달) / "skip"(STRIDE 미달·잘못된 입력·같은 timestamp)
             / "low_coverage"(유효 관절/골반 커버리지 미달 — 학습 분포 밖 입력이라 추론 안 함)
             / "error"(전처리·추론 예외 — level=None, 상위에서 직전값 유지)
 
     반환 score는 30프레임(~1초) 윈도우 평균(instant_score)을 다시
     SCORE_SMOOTH_SECONDS(2초) 구간으로 평활화한 값이다 (2026-08-05 2.5초→2초 보정).
     """
-    if len(landmarks) != 33:
+    # 깨진 프레임이 버퍼에 들어가면 이후 30프레임 윈도우가 모두 오염되거나 KeyError로 연결이 끊긴다.
+    if not _is_valid_frame(landmarks, timestamp):
+        if device_id not in _invalid_input_warned:
+            _invalid_input_warned.add(device_id)
+            logger.warning("잘못된 프레임 입력 — 건너뜀(이 연결에서 첫 1회만 기록) device_id=%s", device_id)
         return _no_inference("skip")
 
     # ── landmark JSON → row dict (main.py build_row() 대응) ───────────────
@@ -499,6 +529,20 @@ def infer_landmarks(landmarks: list, device_id: str, timestamp: float) -> dict:
 
     # ── 윈도우 버퍼 관리 (Method A — deque 단일 책임) ─────────────────────
     buf = _get_buffer(device_id)
+    if buf:
+        last_timestamp = buf[-1]["timestamp"]
+        # 같은 timestamp는 중복 전송 — dt=0이 1e-6으로 바뀌어 속도 특징이 튀므로 그 프레임만 버린다.
+        if timestamp == last_timestamp:
+            return _no_inference("skip")
+        # 거꾸로 가면(재연결 직후 옛 프레임·앱 시계 재시작·비정상 클라이언트) 윈도우의 dt가 음수가 된다
+        # — 이 기기 상태를 비우고 이 프레임부터 다시 쌓는다.
+        if timestamp < last_timestamp:
+            logger.warning(
+                "timestamp 역행 — 기기 버퍼 초기화 device_id=%s prev=%s now=%s",
+                device_id, last_timestamp, timestamp,
+            )
+            _drop_device_state(device_id)
+            buf = _get_buffer(device_id)
     buf.append(raw)
     _frame_counts[device_id] = _frame_counts.get(device_id, 0) + 1
 
