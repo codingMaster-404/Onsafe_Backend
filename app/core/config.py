@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     # CORS: 쉼표로 구분된 허용 출처 목록. 미설정 시 Kotlin 서버만 허용
     cors_origins: str = ""
 
-    model_config = {"env_file": ".env"}
+    # 로컬 .env는 Kotlin과 같이 쓰므로(ENCRYPTION_AES_KEY 등) 모르는 키는 무시한다 — 거부하면 기동하지 못한다.
+    # 변수 이름 오타도 조용히 무시되니 새 설정을 넣을 때는 이름을 확인할 것.
+    model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()
