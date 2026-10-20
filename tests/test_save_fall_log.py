@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -17,7 +18,7 @@ def kotlin(monkeypatch):
     class FakeKotlin:
         def __init__(self):
             self.requests: list[httpx.Request] = []
-            self.respond = httpx.Response(200, json={"success": True})
+            self.respond = httpx.Response(200, json={"success": True, "message": "낙상 로그 저장 완료", "data": {"saved": True}})
 
         def handler(self, request: httpx.Request) -> httpx.Response:
             self.requests.append(request)
@@ -37,19 +38,20 @@ async def _save():
     return await service._save_fall_log("u1", "d1", 80.0, True, video_bytes=None)
 
 
-async def test_2xx_returns_log_id_sent_to_kotlin(kotlin):
-    log_id = await _save()
+async def test_saved_returns_log_id_sent_to_kotlin(kotlin):
+    result = await _save()
 
-    assert log_id is not None
+    assert result.log_id is not None
+    assert result.retry is False
     body = json.loads(kotlin.requests[0].content)
-    assert body["log_id"] == log_id
+    assert body["log_id"] == result.log_id
 
 
 @pytest.mark.parametrize("status", [400, 403, 404, 500, 503])
 async def test_non_2xx_returns_none(kotlin, status):
     kotlin.respond = httpx.Response(status, json={"success": False, "message": "err"})
 
-    assert await _save() is None
+    assert await _save() == service.FallLogSaveResult(log_id=None, retry=True)
 
 
 @pytest.mark.parametrize("error", [
@@ -59,7 +61,7 @@ async def test_non_2xx_returns_none(kotlin, status):
 async def test_transport_error_returns_none(kotlin, error):
     kotlin.respond = error
 
-    assert await _save() is None
+    assert await _save() == service.FallLogSaveResult(log_id=None, retry=True)
 
 
 async def test_non_2xx_logs_status_and_truncated_body(kotlin, caplog):
@@ -83,6 +85,35 @@ async def test_request_uses_10s_timeout_and_keeps_contract(kotlin):
     assert set(json.loads(req.content)) == {
         "log_id", "device_id", "user_id", "score", "fall", "is_confirmed", "video_url",
     }
+
+
+# ── Kotlin이 저장을 건너뛴 경우 (F2·F3·S7) ─────────────────────
+
+async def test_saved_false_returns_none_without_retry(kotlin, caplog):
+    caplog.set_level(logging.INFO, logger=service.__name__)
+    kotlin.respond = httpx.Response(200, json={
+        "success": True, "message": "낙상 로그 저장 건너뜀 (계정 없음 또는 연결된 보호자 없음)", "data": {"saved": False},
+    })
+
+    assert await _save() == service.FallLogSaveResult(log_id=None, retry=False)
+    assert any("저장 건너뜀" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(200, json={"success": True, "message": "낙상 로그 저장 완료"}),
+    httpx.Response(200, json={"success": True, "data": None}),
+    httpx.Response(200, json={"success": True, "data": {"saved": "false"}}),
+    httpx.Response(200, json=["unexpected"]),
+    httpx.Response(200, text="not json"),
+    httpx.Response(204),
+], ids=["no_data_old_kotlin", "data_null", "saved_string", "not_object", "not_json", "empty_body"])
+async def test_anything_but_json_false_counts_as_saved(kotlin, response):
+    kotlin.respond = response
+
+    result = await _save()
+
+    assert result.log_id is not None
+    assert result.retry is False
 
 
 async def test_realtime_failure_logged_once_per_interval(kotlin, caplog, monkeypatch):
