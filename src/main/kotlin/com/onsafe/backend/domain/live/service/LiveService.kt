@@ -145,6 +145,7 @@ class LiveService(
         room = LiveKitTokenIssuer.roomName(elderUserId),
         token = token,
         expiresAt = LocalDateTime.ofInstant(expiresAt, ZoneId.systemDefault()),
+        expiresAtEpoch = expiresAt.epochSecond,
     )
 
     // 기록 실패가 시청을 막지 않도록 격리하고 실패 사실만 남긴다(UserService.recordSecurityEvent와 같은 정책).
