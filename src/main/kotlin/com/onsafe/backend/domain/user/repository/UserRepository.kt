@@ -12,6 +12,9 @@ import com.onsafe.backend.domain.user.model.entity.User
 import org.springframework.stereotype.Repository
 import java.time.LocalDateTime
 
+/** [UserRepository.saveWithLookups] 결과 — 409 사유를 호출부가 추측하지 않게 겹친 쪽을 알려 준다. */
+enum class LookupSaveResult { SAVED, MAIL_TAKEN, PHONE_TAKEN }
+
 @Repository
 class UserRepository(
     private val firestore: Firestore,
@@ -131,14 +134,14 @@ class UserRepository(
      * 예전에는 `save()`만 해서 룩업이 가입 시점 값에 멈춰 있었다. 그래서 ① 다른 계정과 같은 메일·번호를
      * 가질 수 있었고 ② 바꾸기 전 메일 룩업이 영구히 남아 **아무도 그 메일로 재가입할 수 없었다**.
      *
-     * @return false = 새 메일·전화를 다른 계정이 이미 쓰고 있음(호출부가 409로 변환)
+     * @return 새 메일·전화를 다른 계정이 이미 쓰면 겹친 쪽(호출부가 409로 변환). 둘 다 겹치면 메일을 먼저 알린다.
      */
-    suspend fun saveWithLookups(old: User, updated: User): Boolean {
+    suspend fun saveWithLookups(old: User, updated: User): LookupSaveResult {
         val mailChanged = emailKey(old.mail) != emailKey(updated.mail)
         val phoneChanged = phoneKey(old.phone) != phoneKey(updated.phone)
         if (!mailChanged && !phoneChanged) {
             save(updated)
-            return true
+            return LookupSaveResult.SAVED
         }
 
         val userRef = col.document(updated.userId)
@@ -150,8 +153,8 @@ class UserRepository(
             // Firestore 트랜잭션은 모든 read가 write보다 앞서야 한다 — future를 먼저 받아 병렬화한다.
             val emailFuture = newEmailRef?.let { tx.get(it) }
             val phoneFuture = newPhoneRef?.let { tx.get(it) }
-            val taken = emailFuture?.get()?.exists() == true || phoneFuture?.get()?.exists() == true
-            if (taken) return@runTransaction false
+            if (emailFuture?.get()?.exists() == true) return@runTransaction LookupSaveResult.MAIL_TAKEN
+            if (phoneFuture?.get()?.exists() == true) return@runTransaction LookupSaveResult.PHONE_TAKEN
 
             tx.set(userRef, updated.toMap())
             newEmailRef?.let { tx.set(it, lookupData) }
@@ -160,7 +163,7 @@ class UserRepository(
             // 다른 사용자가 옛 메일로 가입해 이력이 뒤섞일 수 있다.
             if (mailChanged) tx.delete(emailLookup(old.mail))
             if (phoneChanged) tx.delete(phoneLookup(old.phone))
-            true
+            LookupSaveResult.SAVED
         }.await()
     }
 

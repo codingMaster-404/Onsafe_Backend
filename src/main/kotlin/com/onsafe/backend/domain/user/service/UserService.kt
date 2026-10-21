@@ -22,6 +22,7 @@ import com.onsafe.backend.domain.user.model.dto.UserResponse
 import com.onsafe.backend.domain.user.model.dto.VerifyPasswordResponse
 import com.onsafe.backend.domain.user.model.dto.UserUpdateRequest
 import com.onsafe.backend.domain.user.repository.DeletionTaskRepository
+import com.onsafe.backend.domain.user.repository.LookupSaveResult
 import com.onsafe.backend.domain.user.repository.UserRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
@@ -109,8 +110,6 @@ class UserService(
         }
 
         // 메일 소유 확인은 하지 않는다(SES 제거) — 본인 확인(위 reauth)과 중복 검사(saveWithLookups)만 한다.
-        // 실제로 바뀐 메일인지는 409 사유(메일/전화) 구분에 쓴다.
-        val newMail = request.mail?.takeIf { !it.equals(user.mail, ignoreCase = true) }
 
         if (changingPassword) {
             // 비밀번호를 바꾸면 이 기기를 포함한 모든 세션을 끊는다(완료 문서 D6 — 새 토큰은 발급하지 않고
@@ -127,12 +126,12 @@ class UserService(
             address = request.address ?: user.address,
             addressDetail = request.addressDetail ?: user.addressDetail
         )
-        // 메일·전화 룩업 이동까지 한 트랜잭션으로 — 다른 계정이 쓰는 값이면 409.
-        val saved = userRepository.saveWithLookups(user, updated)
-        if (!saved) {
-            throw BusinessException(
-                if (newMail != null) ErrorCode.MAIL_ALREADY_EXISTS else ErrorCode.PHONE_ALREADY_EXISTS
-            )
+        // 메일·전화 룩업 이동까지 한 트랜잭션으로 — 다른 계정이 쓰는 값이면 409. 사유는 트랜잭션이 본
+        // 겹친 쪽을 그대로 쓴다(예전에는 "메일이 바뀌었나"로 골라, 둘 다 바꾸다 전화만 겹쳐도 메일 중복이라 했다).
+        when (userRepository.saveWithLookups(user, updated)) {
+            LookupSaveResult.SAVED -> Unit
+            LookupSaveResult.MAIL_TAKEN -> throw BusinessException(ErrorCode.MAIL_ALREADY_EXISTS)
+            LookupSaveResult.PHONE_TAKEN -> throw BusinessException(ErrorCode.PHONE_ALREADY_EXISTS)
         }
         // 티켓은 저장이 끝난 뒤에 지운다 — 앞에서 소비하면 전화번호 중복(409)이나 Firestore 일시 오류로
         // 실패했을 때 티켓만 타 버려, 값 하나 고쳐 다시 저장하려 해도 비밀번호부터 다시 확인해야 한다(D15와 같은 이유).
