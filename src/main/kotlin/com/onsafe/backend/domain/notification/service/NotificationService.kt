@@ -79,7 +79,8 @@ class NotificationService(
 
     // 이미 조회해둔 User가 있는 호출부(notifyElderAndGuardians)가 같은 유저를 다시 조회하지
     // 않도록 분리한 내부 버전. 공개 API인 sendNotification(request)는 여전히 직접 조회한다.
-    private suspend fun sendNotification(user: User, request: NotificationRequest): NotificationResponse {
+    // [push]가 false면 알림함에만 남기고 FCM은 보내지 않는다(피보호자 본인 낙상 알림).
+    private suspend fun sendNotification(user: User, request: NotificationRequest, push: Boolean = true): NotificationResponse {
         // FCM 발송 성공/실패/토큰 없음과 무관하게 알림 목록에는 항상 남긴다 — 목록 API가
         // push 전송 결과에 의존하지 않고 "무슨 알림이 발생했는지"를 그대로 반영해야 하기 때문.
         notificationRepository.save(
@@ -93,6 +94,9 @@ class NotificationService(
                 subjectUserId = request.subjectUserId,
             )
         )
+        if (!push) {
+            return NotificationResponse(status = "ok", message = "알림함에만 저장했습니다.", fcmMessageId = "")
+        }
 
         // 사용자가 설정에서 알림을 껐다면 FCM 발송만 건너뛴다 — 위 저장은 그대로 두어 알림함에서는
         // 확인할 수 있게 한다. 단, 낙상·위험 수준 이벤트는 안전상 사용자 설정과 무관하게 강제 발송한다.
@@ -233,10 +237,12 @@ class NotificationService(
     }
 
     /**
-     * 피보호자 본인 + 연결된 보호자 전원에게 알림을 보낸다. 발송 대상별로 개별 실패를 격리해
-     * 한 명(예: 만료된 FCM 토큰) 실패가 나머지 수신자 발송을 막지 않게 한다. 본인 발송(FCM 네트워크
-     * 호출 포함)과 보호자 목록 조회·보호자 발송은 서로 데이터 의존이 없어 전부 병렬로 처리해
-     * 보호자 수·본인 발송 지연에 비례해 전체 시간이 늘어나지 않게 한다.
+     * 낙상·재알림 — 연결된 보호자 전원에게 알림을 보내고, 피보호자 본인은 **알림함에만** 남긴다(FCM 없음).
+     * 본인 기기는 대개 카메라라 앱이 본인 낙상 알림을 이미 숨기는데(계정 기준, 포그라운드), 백그라운드면 시스템이
+     * 서버 알림을 바로 띄워 본인 기기가 울렸다. 연결 해제 후 재알림처럼 보호자가 없으면 푸시를 받는 사람이 없다(수용한 정책).
+     *
+     * 수신자별 실패를 격리해 한 명(예: 만료된 FCM 토큰) 실패가 나머지 수신자를 막지 않게 하고,
+     * 본인 저장과 보호자 목록 조회·보호자 발송은 서로 데이터 의존이 없어 병렬로 처리한다.
      *
      * [guardianBody]가 있으면 보호자 사본 본문만 그것으로 바꾼다(피보호자 이름 접두는 유지) — 카메라 오프라인 중
      * 재알림처럼 보호자에게만 다른 행동을 안내할 때 쓴다(S6). 본인 사본은 항상 [body].
@@ -257,13 +263,13 @@ class NotificationService(
             val elderSend = async {
                 runCatching {
                     val elder = elderDeferred.await() ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-                    sendNotification(elder, NotificationRequest(elderUserId, title, body, logId, score, fall, data, subjectUserId = elderUserId))
+                    sendNotification(elder, NotificationRequest(elderUserId, title, body, logId, score, fall, data, subjectUserId = elderUserId), push = false)
                 }.onFailure { e -> log.warn("알림 전송 실패 (userId: $elderUserId): ${e.message}") }
             }
 
             // 보호자 목록 조회와 elder 조회 실패를 여기서 직접 await()하면 coroutineScope의
             // 구조적 동시성 때문에 이미 실행 중인 elderSend까지 취소되며 함수 전체가 예외를 던진다 —
-            // "피보호자 본인 발송은 보호자 쪽 실패와 무관하게 항상 이뤄져야 한다"는 이 함수의 격리
+            // "피보호자 본인 알림함 저장은 보호자 쪽 실패와 무관하게 항상 이뤄져야 한다"는 이 함수의 격리
             // 원칙이 깨진다. runCatching으로 감싸 실패해도 빈 목록/폴백 이름으로 계속 진행한다.
             val guardianIds = runCatching { guardianLinkRepository.findGuardiansOf(elderUserId) }
                 .onFailure { e -> log.warn("보호자 목록 조회 실패 (elderUserId: $elderUserId): ${e.message}") }
