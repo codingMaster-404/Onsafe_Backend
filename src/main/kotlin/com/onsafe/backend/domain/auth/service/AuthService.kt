@@ -70,19 +70,23 @@ class AuthService(
         if (!accessToken.isNullOrBlank()) blacklistToken(accessToken)
         if (!refreshToken.isNullOrBlank()) blacklistToken(refreshToken)
 
-        val fcmToken = fcm?.fcmToken?.takeIf { it.isNotBlank() } ?: return
-        val deviceId = fcm.deviceId?.takeIf { it.isNotBlank() } ?: return
         // 로그아웃은 공개 경로라 인증 principal이 없다. 토큰에서 userId를 얻되, access가 이미
         // 만료됐을 수 있어 refresh로도 한 번 더 시도한다. 둘 다 못 읽으면 조용히 건너뛴다 —
-        // 알림 토큰 정리 실패가 로그아웃을 막아서는 안 된다.
+        // 알림 토큰 정리·기록 실패가 로그아웃을 막아서는 안 된다.
         val userId = accessToken?.let { userIdOrNull(it, TokenType.ACCESS) }
             ?: refreshToken?.let { userIdOrNull(it, TokenType.REFRESH) }
         if (userId == null) {
-            log.warn("로그아웃 FCM 해제 건너뜀 — 토큰에서 userId를 읽지 못했습니다")
+            log.warn("로그아웃 FCM 해제·기록 건너뜀 — 토큰에서 userId를 읽지 못했습니다")
             return
         }
-        runCatching { notificationService.unregisterFcmToken(userId, fcmToken, deviceId) }
-            .onFailure { e -> log.warn("로그아웃 FCM 해제 실패 (userId: $userId): ${e.message}") }
+
+        // FCM 본문은 선택이다 — 없으면 해제만 건너뛰고 LOGOUT은 그대로 기록한다(예전에는 기록까지 빠졌다).
+        val fcmToken = fcm?.fcmToken?.takeIf { it.isNotBlank() }
+        val deviceId = fcm?.deviceId?.takeIf { it.isNotBlank() }
+        if (fcmToken != null && deviceId != null) {
+            runCatching { notificationService.unregisterFcmToken(userId, fcmToken, deviceId) }
+                .onFailure { e -> log.warn("로그아웃 FCM 해제 실패 (userId: $userId): ${e.message}") }
+        }
         recordSecurityEvent(userId, SecurityEventType.LOGOUT)
     }
 
@@ -126,7 +130,8 @@ class AuthService(
 
     suspend fun checkMail(request: CheckMailRequest) {
         // 사전 조회 오남용 방지 — 회원가입 UX용이므로 시간당 10회로 넉넉히 허용한다.
-        rateLimiter.requireAllowed("rl:check-mail:${request.mail}", limit = 10, windowSec = 3600)
+        // 키는 정규화한다 — 대소문자·공백만 바꿔 한도를 따로 세지 못하게(find-id·메일 룩업과 같은 규칙).
+        rateLimiter.requireAllowed("rl:check-mail:${request.mail.trim().lowercase()}", limit = 10, windowSec = 3600)
         if (userRepository.existsByMail(request.mail)) {
             throw BusinessException(ErrorCode.MAIL_ALREADY_EXISTS)
         }
