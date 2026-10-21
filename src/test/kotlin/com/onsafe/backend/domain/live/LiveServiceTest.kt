@@ -250,6 +250,24 @@ class LiveServiceTest {
     }
 
     @Test
+    fun `LiveKit 설정이 비면 LIVE_UNAVAILABLE이고 세션·열람 기록·송출 요청을 남기지 않는다`() = runTest {
+        givenLinked(); givenAllowed(); givenLiveVideoEnabled(true); givenNewSessionSaves()
+        val unconfigured = LiveService(
+            guardianLinkRepository, settingsRepository, liveSessionRepository,
+            LiveKitTokenIssuer("", "", ""), rateLimiter, loginHistoryRepository, notificationService, terminator,
+            realtimeDataRepository
+        )
+
+        val e = assertThrows<BusinessException> { unconfigured.startSession(guardian, elder, now) }
+
+        // 예전에는 토큰을 마지막에 발급해, 보호자는 503인데 피보호자 앱은 깨어나고 기록도 남았다.
+        assertEquals(ErrorCode.LIVE_UNAVAILABLE, e.errorCode)
+        coVerify(exactly = 0) { liveSessionRepository.save(any(), any()) }
+        coVerify(exactly = 0) { loginHistoryRepository.save(any()) }
+        coVerify(exactly = 0) { notificationService.sendDataMessage(any(), any(), any()) }
+    }
+
+    @Test
     fun `기기 확인 - heartbeat 기록이 없으면 오프라인으로 본다`() = runTest {
         givenLinked(); givenAllowed(); givenLiveVideoEnabled(true)
         coEvery { liveSessionRepository.find(elder) } returns null
