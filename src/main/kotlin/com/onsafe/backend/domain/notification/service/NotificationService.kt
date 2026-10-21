@@ -33,11 +33,31 @@ import java.time.Duration
 import java.time.LocalDateTime
 
 // 앱(PushNotifications.kt)이 만든 알림 채널 ID. 서버가 android.notification.channel_id로 실어
-// 보내야 백그라운드 알림에도 채널이 적용된다.
-private const val CHANNEL_ALERTS = "onsafe_alerts"   // 낙상·오프라인 등 즉시 확인이 필요한 알림
-private const val CHANNEL_PAIRING = "onsafe_pairing" // 보호자 연결 상태 변화
+// 보내야 백그라운드 알림에도 채널이 적용된다. **앱의 CHANNEL_* 값과 반드시 같아야 한다.**
+// 앱에 없는 ID면 FCM이 기본 채널(앱 manifest의 onsafe_alerts)로 표시한다.
+internal const val CHANNEL_ALERTS = "onsafe_alerts"   // 오프라인·감지 중단 등 즉시 확인이 필요한 알림
+internal const val CHANNEL_PAIRING = "onsafe_pairing" // 보호자 연결 상태 변화
+// 낙상 알림 위험·주의 채널. 앱이 소리·진동을 바꾸면 _v 번호를 올리므로 그때 서버도 같이 바꿔 동시 배포해야 한다.
+internal const val CHANNEL_DANGER = "onsafe_danger_v1"   // 위험: 경보음 + 진동
+internal const val CHANNEL_WARNING = "onsafe_warning_v1" // 주의: 진동만
 private const val EVENT_KEY = "event"
 private const val PAIRING_EVENT_PREFIX = "pairing"
+private const val FALL_EVENT_PREFIX = "fall"
+private const val FALL_ESCALATED_EVENT = "fall_escalated"
+
+/**
+ * 알림 채널 판정 — 앱 `PushNotifications.fallAlertLevel`과 같은 규칙이어야 포그라운드(앱이 판정)와
+ * 백그라운드(서버 지정 채널로 시스템이 표시)가 같은 소리·진동이 된다.
+ *
+ * 낙상 계열(event가 `fall`로 시작): 재알림·낙상·점수 없음·점수 > 75 → 위험, 그 외 → 주의(주의 수준도 같은 event로 보낸다).
+ * 그 밖: `pairing*` → 연결 채널, 나머지 → 안전 알림 채널.
+ */
+internal fun channelFor(event: String?, fall: Boolean, score: Float?): String = when {
+    event?.startsWith(PAIRING_EVENT_PREFIX) == true -> CHANNEL_PAIRING
+    event?.startsWith(FALL_EVENT_PREFIX) != true -> CHANNEL_ALERTS
+    event == FALL_ESCALATED_EVENT || fall || score == null || score > RiskLevel.DANGER_THRESHOLD -> CHANNEL_DANGER
+    else -> CHANNEL_WARNING
+}
 
 @Service
 class NotificationService(
@@ -101,7 +121,7 @@ class NotificationService(
             // 앱이 백그라운드·종료 상태면 onMessageReceived가 호출되지 않고 시스템이 알림을 직접
             // 표시한다. 이때 channel_id가 없으면 앱이 만든 채널(onsafe_alerts: IMPORTANCE_HIGH)이
             // 적용되지 않아 낙상 알림이 소리·헤드업 없이 조용히 쌓인다. 서버가 채널을 지정해야 한다.
-            .setAndroidConfig(androidConfigFor(request.data?.get(EVENT_KEY)))
+            .setAndroidConfig(androidConfigFor(request))
         request.data?.forEach { (k, v) -> messageBuilder.putData(k, v) }
 
         val batch = try {
@@ -181,8 +201,8 @@ class NotificationService(
     }
 
     // 앱이 만든 채널 ID와 반드시 같아야 한다(프론트 PushNotifications.CHANNEL_*).
-    private fun androidConfigFor(event: String?): AndroidConfig {
-        val channelId = if (event?.startsWith(PAIRING_EVENT_PREFIX) == true) CHANNEL_PAIRING else CHANNEL_ALERTS
+    private fun androidConfigFor(request: NotificationRequest): AndroidConfig {
+        val channelId = channelFor(request.data?.get(EVENT_KEY), request.fall, request.score)
         return AndroidConfig.builder()
             .setPriority(AndroidConfig.Priority.HIGH)
             .setNotification(AndroidNotification.builder().setChannelId(channelId).build())
