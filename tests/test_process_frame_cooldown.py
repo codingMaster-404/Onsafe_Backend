@@ -30,6 +30,7 @@ def frame(monkeypatch):
         def __init__(self):
             self.score = DANGER_SCORE
             self.save_ok = True
+            self.skipped = False  # Kotlin이 저장을 건너뜀(data.saved=false)
             self.saves = 0
 
         async def __call__(self):
@@ -45,7 +46,11 @@ def frame(monkeypatch):
 
     async def save_fall_log(user_id, device_id, score, fall, video_bytes):
         f.saves += 1
-        return f"log-{f.saves}" if f.save_ok else None
+        if not f.save_ok:
+            return service.FallLogSaveResult(log_id=None, retry=True)
+        if f.skipped:
+            return service.FallLogSaveResult(log_id=None, retry=False)
+        return service.FallLogSaveResult(log_id=f"log-{f.saves}", retry=False)
 
     monkeypatch.setattr(service, "infer_landmarks_async", infer)
     monkeypatch.setattr(service, "_update_realtime", update_realtime)
@@ -121,6 +126,34 @@ async def test_shorten_failure_does_not_break_frame(fake_redis, frame, monkeypat
 
     assert result.log_id is None
     assert result.level == "위험"
+
+
+@pytest.mark.parametrize("score, prefix, ttl", [
+    (DANGER_SCORE, "danger_cd", buffer.DANGER_COOLDOWN_SECONDS),
+    (CAUTION_SCORE, "caution_cd", buffer.CAUTION_COOLDOWN_SECONDS),
+], ids=["danger", "caution"])
+async def test_kotlin_skip_keeps_full_cooldown(fake_redis, frame, score, prefix, ttl):
+    # 계정 없음·보호자 없음은 다시 시도해도 같다 — 30초로 줄이지 않는다(F3)
+    frame.score = score
+    frame.skipped = True
+
+    first = await frame()
+    second = await frame()
+
+    assert first.log_id is None
+    assert second.log_id is None
+    assert frame.saves == 1
+    assert await fake_redis.ttl(f"{prefix}:u1") > ttl - 5
+
+
+async def test_redis_down_kotlin_skip_keeps_local_cooldown(broken_redis, frame):
+    frame.skipped = True
+    await frame()
+
+    expires_at = service._local_cooldowns[("danger", "u1")]
+    assert expires_at - time.monotonic() > buffer.SAVE_RETRY_SECONDS
+    assert (await frame()).log_id is None
+    assert frame.saves == 1
 
 
 # ── Redis 장애 (fail-open + 메모리 쿨다운) ─────────────────────

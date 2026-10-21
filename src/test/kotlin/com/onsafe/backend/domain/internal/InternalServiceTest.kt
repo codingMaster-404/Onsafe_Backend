@@ -19,6 +19,7 @@ import io.mockk.slot
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
@@ -74,11 +75,55 @@ class InternalServiceTest {
         } throws RuntimeException("FCM_SEND_FAILED")
 
         // notifySafe가 내부에서 runCatching으로 감싸므로 예외 없이 정상 종료되어야 함
-        internalService.saveFallLog(baseRequest)
+        val saved = internalService.saveFallLog(baseRequest)
 
+        // 알림이 실패해도 기록은 있으므로 저장됨으로 알린다 — 앱이 이 log_id로 영상을 올릴 수 있어야 한다
+        assertTrue(saved)
         assertEquals("log001", savedSlot.captured.logId)
         assertEquals("testUser", savedSlot.captured.userId)
         assertEquals(90f, savedSlot.captured.score)
+    }
+
+    // ── 저장 여부 반환(건너뛴 경우 Python이 log_id를 비우게 함) ─────────
+
+    @Test
+    fun `저장하면 true를 반환한다`() = runTest {
+        coEvery { fallLogRepository.save(any()) } answers { firstArg() }
+        coEvery {
+            notificationService.notifyElderAndGuardians(
+                elderUserId = any(), title = any(), body = any(), logId = any(), score = any(), fall = any(), data = any()
+            )
+        } just Runs
+
+        assertTrue(internalService.saveFallLog(baseRequest))
+    }
+
+    @Test
+    fun `계정이 없으면 저장·알림 없이 false를 반환한다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns null
+
+        assertFalse(internalService.saveFallLog(baseRequest))
+
+        coVerify(exactly = 0) { fallLogRepository.save(any()) }
+        coVerify(exactly = 0) {
+            notificationService.notifyElderAndGuardians(
+                elderUserId = any(), title = any(), body = any(), logId = any(), score = any(), fall = any(), data = any()
+            )
+        }
+    }
+
+    @Test
+    fun `연결된 보호자가 없으면 저장·알림 없이 false를 반환한다`() = runTest {
+        coEvery { guardianLinkRepository.existsByElder("testUser") } returns false
+
+        assertFalse(internalService.saveFallLog(baseRequest))
+
+        coVerify(exactly = 0) { fallLogRepository.save(any()) }
+        coVerify(exactly = 0) {
+            notificationService.notifyElderAndGuardians(
+                elderUserId = any(), title = any(), body = any(), logId = any(), score = any(), fall = any(), data = any()
+            )
+        }
     }
 
     // ── 알림 발송 조건 ────────────────────────────────────────────
