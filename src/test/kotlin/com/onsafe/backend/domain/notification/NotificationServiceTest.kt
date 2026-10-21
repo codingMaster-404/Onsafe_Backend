@@ -111,21 +111,26 @@ class NotificationServiceTest {
     private fun tokens(vararg ids: String) = ids.map { FcmToken(deviceId = it, token = "token-$it") }
 
     // sendEachForMulticastAsync 결과를 토큰별로 흉내 낸다. success=true면 성공, 아니면 UNREGISTERED.
-    private fun stubMulticast(vararg successes: Boolean): BatchResponse {
+    private fun stubMulticast(vararg successes: Boolean): BatchResponse =
+        stubMulticastCodes(*successes.map { if (it) null else MessagingErrorCode.UNREGISTERED }.toTypedArray())
+
+    // 토큰별 실패 코드를 지정한다. null이면 성공.
+    private fun stubMulticastCodes(vararg codes: MessagingErrorCode?): BatchResponse {
         val mockFcm: FirebaseMessaging = mockk()
         val future: ApiFuture<BatchResponse> = mockk()
         val batch: BatchResponse = mockk()
-        val responses = successes.mapIndexed { index, ok ->
+        val responses = codes.mapIndexed { index, code ->
+            val ok = code == null
             mockk<SendResponse>().also {
                 every { it.isSuccessful } returns ok
                 every { it.messageId } returns if (ok) "projects/onsafe/messages/msg$index" else null
                 every { it.exception } returns if (ok) null else mockk<FirebaseMessagingException>().also { e ->
-                    every { e.messagingErrorCode } returns MessagingErrorCode.UNREGISTERED
+                    every { e.messagingErrorCode } returns code
                 }
             }
         }
         every { batch.responses } returns responses
-        every { batch.successCount } returns successes.count { it }
+        every { batch.successCount } returns codes.count { it == null }
         every { FirebaseMessaging.getInstance() } returns mockFcm
         every { mockFcm.sendEachForMulticastAsync(any<MulticastMessage>()) } returns future
         every { future.get() } returns batch
@@ -162,6 +167,43 @@ class NotificationServiceTest {
         // 예전 구조에서는 실패 한 번에 계정의 유일한 토큰이 지워져 전면 미수신이 됐다.
         coVerify(exactly = 1) { fcmTokenRepository.deleteByToken("testUser", "token-old") }
         coVerify(exactly = 0) { fcmTokenRepository.deleteByToken("testUser", "token-phone") }
+    }
+
+    @Test
+    fun `INVALID_ARGUMENT 토큰은 같은 묶음에 성공이 있으면 지운다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("phone", "broken")
+        stubMulticastCodes(null, MessagingErrorCode.INVALID_ARGUMENT)
+
+        notificationService.sendNotification(NotificationRequest(userId = "testUser", title = "낙상 경보", body = "낙상 감지"))
+
+        // 다른 기기에 전달됐으니 메시지는 정상 — 이 토큰 자체가 무효다.
+        coVerify(exactly = 1) { fcmTokenRepository.deleteByToken("testUser", "token-broken") }
+        coVerify(exactly = 0) { fcmTokenRepository.deleteByToken("testUser", "token-phone") }
+    }
+
+    @Test
+    fun `INVALID_ARGUMENT로 전부 실패하면 메시지 오류일 수 있어 토큰을 지우지 않는다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("phone", "camera")
+        stubMulticastCodes(MessagingErrorCode.INVALID_ARGUMENT, MessagingErrorCode.INVALID_ARGUMENT)
+
+        runCatching {
+            notificationService.sendNotification(NotificationRequest(userId = "testUser", title = "낙상 경보", body = "낙상 감지"))
+        }
+
+        coVerify(exactly = 0) { fcmTokenRepository.deleteByToken(any(), any()) }
+    }
+
+    @Test
+    fun `SENDER_ID_MISMATCH는 성공이 있어도 지우지 않는다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("phone", "other")
+        stubMulticastCodes(null, MessagingErrorCode.SENDER_ID_MISMATCH)
+
+        notificationService.sendNotification(NotificationRequest(userId = "testUser", title = "낙상 경보", body = "낙상 감지"))
+
+        coVerify(exactly = 0) { fcmTokenRepository.deleteByToken(any(), any()) }
     }
 
     @Test

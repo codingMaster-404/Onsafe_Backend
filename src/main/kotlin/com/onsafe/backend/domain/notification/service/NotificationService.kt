@@ -158,13 +158,20 @@ class NotificationService(
 
     // 토큰별 결과를 받아 만료된 기기만 정리한다 — 예전에는 필드가 하나뿐이라 실패 한 번에
     // 그 계정의 유일한 토큰이 지워지고 재등록 전까지 전면 미수신이 됐다.
+    //
+    // INVALID_ARGUMENT는 토큰 형식 오류뿐 아니라 메시지 자체 오류(data·TTL 등)에도 온다. 무조건 지우면 메시지
+    // 버그 하나로 모든 사용자의 토큰이 사라지므로, 같은 묶음에서 1건 이상 성공해 메시지가 정상임이 확인될 때만 지운다.
+    // SENDER_ID_MISMATCH는 넣지 않는다 — 서버가 다른 Firebase 프로젝트 자격증명으로 돌면 모든 토큰에 온다.
     private suspend fun cleanUpFailedTokens(userId: String, tokens: List<FcmToken>, batch: BatchResponse) {
+        val messageAccepted = batch.successCount > 0
         batch.responses.forEachIndexed { index, result ->
             if (result.isSuccessful) return@forEachIndexed
             val token = tokens[index]
             val errorCode = (result.exception as? FirebaseMessagingException)?.messagingErrorCode
-            if (errorCode == MessagingErrorCode.UNREGISTERED) {
-                log.warn("FCM 토큰 만료로 삭제 (userId: $userId, deviceId: ${token.deviceId})")
+            val staleToken = errorCode == MessagingErrorCode.UNREGISTERED ||
+                (errorCode == MessagingErrorCode.INVALID_ARGUMENT && messageAccepted)
+            if (staleToken) {
+                log.warn("FCM 토큰 만료·무효로 삭제 (userId: $userId, deviceId: ${token.deviceId}, code: $errorCode)")
                 runCatching { fcmTokenRepository.deleteByToken(userId, token.token) }
                     .onFailure { e -> log.warn("만료 토큰 삭제 실패 (userId: $userId): ${e.message}") }
             } else {
