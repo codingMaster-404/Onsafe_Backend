@@ -494,7 +494,7 @@ class UserServiceTest {
         userService.deleteUser("testUser", "ticket-1")
 
         assertEquals(SecurityEventType.ACCOUNT_DELETED, events.single().eventType)
-        // 이력은 별도 컬렉션이라 계정이 사라진 뒤에도 조사에 쓸 수 있다.
+        // 계정 문서 삭제 전에 기록한다. 탈퇴 정리(purge)에서 다른 이력과 함께 파기된다.
         coVerifyOrder {
             loginHistoryRepository.save(any())
             userRepository.createDeletionTaskAndDeleteUser(any())

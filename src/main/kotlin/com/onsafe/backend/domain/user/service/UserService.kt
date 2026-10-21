@@ -213,7 +213,8 @@ class UserService(
         val logIds = fallLogRepository.findLogIdsByUserId(userId)
         val task = DeletionTask(userId = userId, mail = user.mail, phone = user.phone, logIds = logIds)
 
-        // 계정 문서가 사라지기 **전에** 남긴다 — 이력은 별도 컬렉션이라 탈퇴 후에도 조사에 쓸 수 있다(C6).
+        // 계정 문서가 사라지기 **전에** 남긴다(C6). 이 기록도 아래 purge에서 login_history와 함께 파기된다
+        // (개인정보 즉시 파기 — 스펙 login_history). 정리가 중단되면 잡이 끝낼 때까지만 남는다.
         recordSecurityEvent(userId, SecurityEventType.ACCOUNT_DELETED)
 
         // ③ 임계 구간 — 이 트랜잭션이 끝나면 사용자 관점에서 탈퇴는 완료다(계정 소멸).
