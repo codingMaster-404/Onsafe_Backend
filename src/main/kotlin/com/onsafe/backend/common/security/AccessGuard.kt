@@ -25,8 +25,8 @@ class AccessGuard(private val guardianLinkRepository: GuardianLinkRepository) {
         data class Guardian(val since: LocalDateTime) : Grant()
     }
 
-    // 조회성 API 전용 — 본인이거나 연결된 보호자면 통과, Grant 반환. 삭제·업로드처럼 리소스를
-    // 직접 조작하는 API 에는 쓰지 않는다(본인 전용으로 남겨야 함).
+    // 본인이거나 연결된 보호자면 통과, Grant 반환. 조회·확인 처리와 사고 이력 삭제(보호자 요청 — 연결 이후 이력,
+    // 미확인 위험 제외)에 쓴다. 업로드처럼 피보호자 기기만 하는 조작에는 쓰지 않는다(본인 전용).
     // 반환 Grant.since 를 컨트롤러가 하위 쿼리 필터로 전달해야 재페어링 이후에도 이전 이력이
     // 새 보호자에게 노출되지 않는다.
     suspend fun requireOwnerOrGuardian(principal: String, userId: String): Grant {

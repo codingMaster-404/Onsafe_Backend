@@ -3,10 +3,15 @@ package com.onsafe.backend.domain.logs
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.storage.StorageService
+import com.onsafe.backend.domain.auth.model.entity.LoginHistory
+import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
+import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
 import com.onsafe.backend.domain.logs.service.FallLogService
+import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import io.mockk.coEvery
+import io.mockk.coJustRun
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
@@ -14,10 +19,13 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.time.LocalDateTime
 class FallLogServiceTest {
 
     private val fallLogRepository: FallLogRepository = mockk()
     private val storageService: StorageService = mockk()
+    private val notificationRepository: NotificationRepository = mockk()
+    private val loginHistoryRepository: LoginHistoryRepository = mockk()
     private lateinit var fallLogService: FallLogService
 
     private val baseLog = FallLog(
@@ -32,7 +40,7 @@ class FallLogServiceTest {
 
     @BeforeEach
     fun setUp() {
-        fallLogService = FallLogService(fallLogRepository, storageService)
+        fallLogService = FallLogService(fallLogRepository, storageService, notificationRepository, loginHistoryRepository)
     }
 
     // ── 단건 조회 ─────────────────────────────────────────────────
@@ -67,7 +75,7 @@ class FallLogServiceTest {
 
     @Test
     fun `사고 이력 삭제 - 존재하지 않으면 LOG_NOT_FOUND 예외 발생`() = runTest {
-        coEvery { fallLogRepository.deleteByLogIdAndUserId("log999", "testUser") } returns 0L
+        coEvery { fallLogRepository.findByLogIdAndUserId("log999", "testUser", null) } returns null
 
         val thrown = runCatching {
             fallLogService.deleteLog("testUser", "log999")
@@ -75,6 +83,101 @@ class FallLogServiceTest {
 
         assertTrue(thrown is BusinessException)
         assertEquals(ErrorCode.LOG_NOT_FOUND, (thrown as BusinessException).errorCode)
+        coVerify(exactly = 0) { fallLogRepository.deleteByLogId(any()) }
+    }
+
+    private val linkedAt = LocalDateTime.of(2026, 10, 1, 0, 0)
+
+    private fun givenDeletable(log: FallLog, since: LocalDateTime? = null): MutableList<LoginHistory> {
+        coEvery { fallLogRepository.findByLogIdAndUserId(log.logId, "testUser", since) } returns log
+        coJustRun { fallLogRepository.deleteByLogId(log.logId) }
+        coEvery { storageService.deleteBlob("fall-videos/${log.logId}.mp4") } returns true
+        coJustRun { notificationRepository.deleteByLogIds(listOf(log.logId)) }
+        val events = mutableListOf<LoginHistory>()
+        coEvery { loginHistoryRepository.save(capture(events)) } answers { firstArg() }
+        return events
+    }
+
+    @Test
+    fun `사고 이력 삭제 - 본인 삭제는 문서·영상·알림 사본을 지우고 보안 이벤트는 남기지 않는다`() = runTest {
+        val events = givenDeletable(baseLog)
+
+        fallLogService.deleteLog("testUser", "log001")
+
+        coVerify(exactly = 1) { fallLogRepository.deleteByLogId("log001") }
+        coVerify(exactly = 1) { storageService.deleteBlob("fall-videos/log001.mp4") }
+        coVerify(exactly = 1) { notificationRepository.deleteByLogIds(listOf("log001")) }
+        assertTrue(events.isEmpty())
+    }
+
+    @Test
+    fun `사고 이력 삭제 - 본인은 확인하지 않은 위험 이벤트도 지울 수 있다`() = runTest {
+        givenDeletable(baseLog.copy(isConfirmed = false))
+
+        fallLogService.deleteLog("testUser", "log001", deletedBy = "testUser")
+
+        coVerify(exactly = 1) { fallLogRepository.deleteByLogId("log001") }
+    }
+
+    @Test
+    fun `사고 이력 삭제 - 보호자는 연결 이후 이력을 지우고 FALL_LOG_DELETED를 남긴다`() = runTest {
+        val events = givenDeletable(baseLog.copy(isConfirmed = true), since = linkedAt)
+
+        fallLogService.deleteLog("testUser", "log001", deletedBy = "guardian1", since = linkedAt)
+
+        coVerify(exactly = 1) { fallLogRepository.deleteByLogId("log001") }
+        coVerify(exactly = 1) { storageService.deleteBlob("fall-videos/log001.mp4") }
+        // 명의는 보호자, 대상은 피보호자 — "누가 내 기록을 지웠나"
+        assertEquals(SecurityEventType.FALL_LOG_DELETED, events.single().eventType)
+        assertEquals("guardian1", events.single().userId)
+        assertEquals("testUser", events.single().targetUserId)
+    }
+
+    @Test
+    fun `사고 이력 삭제 - 보호자는 확인하지 않은 위험 이벤트를 지울 수 없다`() = runTest {
+        givenDeletable(baseLog.copy(isConfirmed = false), since = linkedAt)
+
+        val thrown = runCatching {
+            fallLogService.deleteLog("testUser", "log001", deletedBy = "guardian1", since = linkedAt)
+        }.exceptionOrNull()
+
+        // 지우면 미확인 재알림이 멈춘다.
+        assertEquals(ErrorCode.LOG_NOT_CONFIRMED, (thrown as BusinessException).errorCode)
+        coVerify(exactly = 0) { fallLogRepository.deleteByLogId(any()) }
+        coVerify(exactly = 0) { storageService.deleteBlob(any()) }
+    }
+
+    @Test
+    fun `사고 이력 삭제 - 보호자는 확인하지 않았어도 주의 등급 이벤트는 지울 수 있다`() = runTest {
+        givenDeletable(baseLog.copy(score = 40f, fall = false, isConfirmed = false), since = linkedAt)
+
+        fallLogService.deleteLog("testUser", "log001", deletedBy = "guardian1", since = linkedAt)
+
+        coVerify(exactly = 1) { fallLogRepository.deleteByLogId("log001") }
+    }
+
+    @Test
+    fun `사고 이력 삭제 - 보호자에게 연결 이전 이력은 없는 것으로 보인다`() = runTest {
+        coEvery { fallLogRepository.findByLogIdAndUserId("log001", "testUser", linkedAt) } returns null
+
+        val thrown = runCatching {
+            fallLogService.deleteLog("testUser", "log001", deletedBy = "guardian1", since = linkedAt)
+        }.exceptionOrNull()
+
+        assertEquals(ErrorCode.LOG_NOT_FOUND, (thrown as BusinessException).errorCode)
+        coVerify(exactly = 0) { fallLogRepository.deleteByLogId(any()) }
+    }
+
+    @Test
+    fun `사고 이력 삭제 - 영상·알림·기록 정리가 실패해도 삭제는 성공한다`() = runTest {
+        givenDeletable(baseLog.copy(isConfirmed = true), since = linkedAt)
+        coEvery { storageService.deleteBlob(any()) } throws RuntimeException("gcs down")
+        coEvery { notificationRepository.deleteByLogIds(any()) } throws RuntimeException("firestore down")
+        coEvery { loginHistoryRepository.save(any()) } throws RuntimeException("firestore down")
+
+        fallLogService.deleteLog("testUser", "log001", deletedBy = "guardian1", since = linkedAt)
+
+        coVerify(exactly = 1) { fallLogRepository.deleteByLogId("log001") }
     }
 
     // ── 동영상 서명 URL 조회 ──────────────────────────────────────

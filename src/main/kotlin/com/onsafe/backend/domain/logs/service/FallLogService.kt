@@ -3,18 +3,27 @@ package com.onsafe.backend.domain.logs.service
 import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.storage.StorageService
+import com.onsafe.backend.domain.auth.model.entity.LoginHistory
+import com.onsafe.backend.domain.auth.model.entity.SecurityEventType
+import com.onsafe.backend.domain.auth.repository.LoginHistoryRepository
 import com.onsafe.backend.domain.camera.model.entity.RiskLevel
 import com.onsafe.backend.domain.logs.model.dto.FallLogResponse
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
+import com.onsafe.backend.domain.notification.repository.NotificationRepository
+import kotlinx.coroutines.CancellationException
+import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Service
 import java.time.LocalDateTime
 
 @Service
 class FallLogService(
     private val fallLogRepository: FallLogRepository,
-    private val storageService: StorageService
+    private val storageService: StorageService,
+    private val notificationRepository: NotificationRepository,
+    private val loginHistoryRepository: LoginHistoryRepository,
 ) {
+    private val log = LoggerFactory.getLogger(javaClass)
 
     // since 는 AccessGuard.Grant.Guardian.since (연결 시각) — 보호자 호출 시 이 값을 넘겨
     // 이 이전에 발생한 이력이 새 보호자에게 노출되지 않게 한다. 본인 호출은 null.
@@ -36,9 +45,44 @@ class FallLogService(
         return FallLogResponse.from(log)
     }
 
-    suspend fun deleteLog(userId: String, logId: String) {
-        val deleted = fallLogRepository.deleteByLogIdAndUserId(logId, userId)
-        if (deleted == 0L) throw BusinessException(ErrorCode.LOG_NOT_FOUND)
+    /**
+     * 사고 이력 삭제 — 본인 또는 연결된 보호자([deletedBy] != [userId]면 보호자, [since] 이후 이력만).
+     *
+     * 보호자는 확인하지 않은 위험 이벤트를 지울 수 없다 — 지우면 미확인 재알림이 멈춘다. 본인은 앱에 삭제 경로가 없어 막지 않는다.
+     * 문서를 지운 뒤 영상(`fall-videos/{logId}.mp4`)과 알림 사본(본인·보호자 인박스)도 지운다 — 문서가 없으면 둘 다
+     * 쓸 수 없고(signed URL 불가·알림 누르면 404) 영상은 버킷 lifecycle까지 남는다. 정리는 best-effort(탈퇴 정리와 같은 방식).
+     */
+    suspend fun deleteLog(userId: String, logId: String, deletedBy: String = userId, since: LocalDateTime? = null) {
+        val target = fallLogRepository.findByLogIdAndUserId(logId, userId, since)
+            ?: throw BusinessException(ErrorCode.LOG_NOT_FOUND)
+        val byGuardian = deletedBy != userId
+        if (byGuardian && target.isDangerLevel() && !target.isConfirmed) {
+            throw BusinessException(ErrorCode.LOG_NOT_CONFIRMED)
+        }
+
+        fallLogRepository.deleteByLogId(logId)
+
+        cleanUp("fall-video:$logId", logId) { storageService.deleteBlob("fall-videos/$logId.mp4") }
+        cleanUp("notifications", logId) { notificationRepository.deleteByLogIds(listOf(logId)) }
+        // 다른 사람(보호자)이 피보호자 기록을 지운 흔적 — "누가 내 기록을 지웠나"를 남긴다.
+        if (byGuardian) {
+            cleanUp("security-event", logId) {
+                loginHistoryRepository.save(
+                    LoginHistory(historyId = "", userId = deletedBy, eventType = SecurityEventType.FALL_LOG_DELETED, targetUserId = userId)
+                )
+            }
+        }
+    }
+
+    // 삭제 뒤 정리 실패가 삭제 응답을 막지 않게 격리한다. 취소는 다시 던진다(UserService.guarded와 같은 규칙).
+    private suspend fun cleanUp(target: String, logId: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("사고 이력 삭제 후 정리 실패 — target={}, logId={}: {}", target, logId, e.message)
+        }
     }
 
     suspend fun getSignedUrl(userId: String, logId: String, since: LocalDateTime? = null): String {

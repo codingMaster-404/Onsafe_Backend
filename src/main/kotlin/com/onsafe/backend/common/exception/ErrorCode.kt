@@ -37,6 +37,8 @@ enum class ErrorCode(
     LOG_NOT_FOUND(HttpStatus.NOT_FOUND, "사고 이력을 찾을 수 없습니다."),
     VIDEO_NOT_FOUND(HttpStatus.NOT_FOUND, "동영상이 존재하지 않습니다."),
     VIDEO_NOT_ALLOWED(HttpStatus.FORBIDDEN, "주의 등급 이벤트는 동영상을 제공하지 않습니다."),
+    // 보호자가 확인하지 않은 위험 이벤트를 지우면 미확인 재알림(FallLogEscalationJob)이 멈춘다 — 확인 처리를 먼저 요구한다.
+    LOG_NOT_CONFIRMED(HttpStatus.CONFLICT, "확인하지 않은 위험 이벤트는 삭제할 수 없습니다. 먼저 확인 처리해주세요."),
 
     // ── 카메라 ────────────────────────────────────────────
     REALTIME_DATA_NOT_FOUND(HttpStatus.NOT_FOUND, "실시간 데이터가 없습니다."),

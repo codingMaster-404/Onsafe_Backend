@@ -35,4 +35,6 @@ enum class SecurityEventType {
     PAIRING_UNPAIRED,
     /** 재페어링 승인으로 기존 관계가 자동 해제됨 — 명의는 승인한 피보호자, 대상은 밀려난 상대(밀려난 관계마다 1건). */
     PAIRING_DISPLACED,
+    /** 보호자가 피보호자의 사고 이력을 삭제 — 명의는 보호자, 대상은 피보호자. 본인 삭제는 기록하지 않는다. */
+    FALL_LOG_DELETED,
 }
