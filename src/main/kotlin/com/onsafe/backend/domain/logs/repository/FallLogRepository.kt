@@ -81,10 +81,9 @@ class FallLogRepository(
         return doc.toFallLog().copy(videoUrl = videoUrl)
     }
 
-    suspend fun deleteByLogIdAndUserId(logId: String, userId: String): Long {
-        getDocIfOwned(logId, userId) ?: return 0L
+    // 소유·보이는 범위(since) 확인은 호출부가 findByLogIdAndUserId로 먼저 한다 — 삭제 전에 확인 상태도 봐야 해서다.
+    suspend fun deleteByLogId(logId: String) {
         col.document(logId).delete().await()
-        return 1L
     }
 
     /** 미확인 위험(위험) 레벨 이벤트 조회 — 에스컬레이션 잡 후보 목록.

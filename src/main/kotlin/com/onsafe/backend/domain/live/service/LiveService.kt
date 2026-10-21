@@ -71,13 +71,16 @@ class LiveService(
             startedBy = existing?.startedBy ?: guardianUserId,
             expiresAt = now.plus(SESSION_DURATION),
         )
+        // 토큰부터 발급한다 — LiveKit 설정이 비어 503(LIVE_UNAVAILABLE)이면 세션 저장·열람 기록·피보호자 깨우기를
+        // 하기 전에 끝나야 한다. 예전에는 마지막에 발급해 보호자는 실패하는데 피보호자 앱은 이미 깨어났다.
+        val viewerToken = tokenIssuer.viewerToken(elderUserId, guardianUserId, SESSION_DURATION)
         liveSessionRepository.save(session, now)
         val delivered = if (isNew) {
             recordEvent(guardianUserId, elderUserId, SecurityEventType.LIVE_VIEW_START)
             requestPublish(session)
         } else null
 
-        return response(elderUserId, tokenIssuer.viewerToken(elderUserId, guardianUserId, SESSION_DURATION), session.expiresAt)
+        return response(elderUserId, viewerToken, session.expiresAt)
             .copy(requestDelivered = delivered)
     }
 
@@ -142,6 +145,7 @@ class LiveService(
         room = LiveKitTokenIssuer.roomName(elderUserId),
         token = token,
         expiresAt = LocalDateTime.ofInstant(expiresAt, ZoneId.systemDefault()),
+        expiresAtEpoch = expiresAt.epochSecond,
     )
 
     // 기록 실패가 시청을 막지 않도록 격리하고 실패 사실만 남긴다(UserService.recordSecurityEvent와 같은 정책).

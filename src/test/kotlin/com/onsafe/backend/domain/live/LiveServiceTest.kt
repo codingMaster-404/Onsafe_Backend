@@ -153,6 +153,7 @@ class LiveServiceTest {
         assertEquals(LiveSession(elder, guardian, now.plus(Duration.ofMinutes(5))), saved.captured)
         assertEquals("wss://test.livekit.cloud", result.serverUrl)
         assertEquals("live-elder1", result.room)
+        assertEquals(now.plus(Duration.ofMinutes(5)).epochSecond, result.expiresAtEpoch)
         val grant = video(claimsOf(result.token))
         assertEquals(true, grant["canSubscribe"])
         assertEquals(false, grant["canPublish"])
@@ -172,10 +173,12 @@ class LiveServiceTest {
         coEvery { liveSessionRepository.save(capture(saved), now) } just runs
         coEvery { loginHistoryRepository.save(any()) } coAnswers { firstArg() }
 
-        service.startSession(other, elder, now)
+        val result = service.startSession(other, elder, now)
 
         assertEquals(guardian, saved.captured.startedBy)
         assertEquals(now.plus(Duration.ofMinutes(5)), saved.captured.expiresAt)
+        // 시간대 없는 expires_at과 같은 시각을 epoch 초로도 준다 — 기기 시간대와 무관하게 해석된다.
+        assertEquals(now.plus(Duration.ofMinutes(5)).epochSecond, result.expiresAtEpoch)
     }
 
     @Test
@@ -246,6 +249,24 @@ class LiveServiceTest {
 
         assertEquals(ErrorCode.LIVE_DEVICE_OFFLINE, e.errorCode)
         coVerify(exactly = 0) { liveSessionRepository.save(any(), any()) }
+        coVerify(exactly = 0) { notificationService.sendDataMessage(any(), any(), any()) }
+    }
+
+    @Test
+    fun `LiveKit 설정이 비면 LIVE_UNAVAILABLE이고 세션·열람 기록·송출 요청을 남기지 않는다`() = runTest {
+        givenLinked(); givenAllowed(); givenLiveVideoEnabled(true); givenNewSessionSaves()
+        val unconfigured = LiveService(
+            guardianLinkRepository, settingsRepository, liveSessionRepository,
+            LiveKitTokenIssuer("", "", ""), rateLimiter, loginHistoryRepository, notificationService, terminator,
+            realtimeDataRepository
+        )
+
+        val e = assertThrows<BusinessException> { unconfigured.startSession(guardian, elder, now) }
+
+        // 예전에는 토큰을 마지막에 발급해, 보호자는 503인데 피보호자 앱은 깨어나고 기록도 남았다.
+        assertEquals(ErrorCode.LIVE_UNAVAILABLE, e.errorCode)
+        coVerify(exactly = 0) { liveSessionRepository.save(any(), any()) }
+        coVerify(exactly = 0) { loginHistoryRepository.save(any()) }
         coVerify(exactly = 0) { notificationService.sendDataMessage(any(), any(), any()) }
     }
 
@@ -377,6 +398,7 @@ class LiveServiceTest {
         // 토큰 exp는 실제 발급 시각 + 남은 시간(120초)이다(LiveKit 토큰엔 iat·nbf가 없어 발급 직전 시각과 비교).
         val ttl = Duration.between(issuedAround, claims.expiration.toInstant())
         assertTrue(ttl <= Duration.ofSeconds(121) && ttl >= Duration.ofSeconds(115), "ttl=$ttl")
+        assertEquals(expiresAt.epochSecond, result.expiresAtEpoch)
     }
 
     // ── 자동 연장 (5-E) ─────────────────────────────────────

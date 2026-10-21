@@ -74,15 +74,19 @@ class FallLogController(
         return ApiResponse.ok(fallLogService.confirmLog(userId, logId, since), "낙상 이벤트를 확인 처리했습니다.")
     }
 
-    @Operation(summary = "낙상 로그 삭제", security = [SecurityRequirement(name = "BearerAuth")])
+    @Operation(
+        summary = "낙상 로그 삭제",
+        description = "본인 또는 연결된 보호자가 삭제할 수 있습니다(보호자는 연결 이후 이력만). 보호자는 확인하지 않은 위험 이벤트를 지울 수 없습니다(409). 영상·알림 사본도 함께 지웁니다.",
+        security = [SecurityRequirement(name = "BearerAuth")]
+    )
     @DeleteMapping("/{userId}/{logId}")
     suspend fun deleteLog(
         @PathVariable userId: String,
         @PathVariable logId: String,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<Unit> {
-        if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
-        fallLogService.deleteLog(userId, logId)
+        val since = accessGuard.requireOwnerOrGuardian(principal, userId).sinceOrNull()
+        fallLogService.deleteLog(userId, logId, deletedBy = principal, since = since)
         return ApiResponse.ok(message = "낙상 로그가 삭제되었습니다.")
     }
 

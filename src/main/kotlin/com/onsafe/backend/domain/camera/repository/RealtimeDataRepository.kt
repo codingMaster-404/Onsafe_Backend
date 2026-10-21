@@ -21,11 +21,6 @@ class RealtimeDataRepository(private val firestore: Firestore) {
         return if (doc.exists()) doc.toRealtimeData() else null
     }
 
-    suspend fun save(data: RealtimeData): RealtimeData {
-        col.document(data.userId).set(data.toMap()).await()
-        return data
-    }
-
     // AI 점수 갱신 진입점(/internal/realtime). 스트리밍 중 초당 수 회 호출되므로 읽고-복사-덮어쓰기를 하면
     // 그 사이에 들어온 워치독 쓰기(감지 중단 상태 비움 등)를 이전 값으로 되돌린다 — 점수 3필드만 merge 한다.
     // 문서가 없으면 이 3필드로 새로 만든다(나머지 필드는 읽을 때 기본값).
@@ -53,9 +48,9 @@ class RealtimeDataRepository(private val firestore: Firestore) {
         firestore.deleteInBatches(legacyDocs.map { it.reference })
     }
 
-    // 앱 heartbeat 진입점. score/level 같은 AI 파이프라인 값은 건드리지 않고 heartbeat 관련
-    // 필드만 덮어쓴다 — Python AI 가 realtime_data 를 갱신하는 흐름과 독립적이라 update 로
-    // 필드 부분 갱신. 문서가 아직 없으면 최초 heartbeat 시 신규 생성.
+    // 앱 heartbeat 진입점. heartbeat 4필드만 merge 한다 — 문서 전체를 다시 쓰면 ① updated_at(AI 점수 갱신
+    // 시각)이 heartbeat마다 바뀌어 AI가 멈춰도 최신처럼 보이고 ② 읽은 뒤 들어온 점수·워치독 쓰기를
+    // 이전 값으로 되돌린다(updateScore와 같은 이유). 문서가 아직 없으면 이 4필드로 새로 만든다.
     // isOnline=true 로 표시하고 lastOfflineNotifiedAt 을 null 로 리셋한다 — heartbeat 가 왔다는
     // 것은 앱이 살아있다는 뜻이라 오프라인 재알림 게이트를 열어 다음 오프라인 감지 시 다시
     // 1회 알림이 나가게 한다. 복구 알림 발송 여부는 호출부(CameraService)가 결정.
@@ -66,19 +61,15 @@ class RealtimeDataRepository(private val firestore: Firestore) {
         timestamp: LocalDateTime = LocalDateTime.now(),
     ): RealtimeData? {
         val existing = findByUserId(userId)
-        val next = existing?.copy(
-            lastHeartbeatAt = timestamp,
-            isOnline = true,
-            powerSaveMode = powerSaveMode,
-            lastOfflineNotifiedAt = null,
-        ) ?: RealtimeData(
-            userId = userId,
-            lastHeartbeatAt = timestamp,
-            isOnline = true,
-            powerSaveMode = powerSaveMode,
-            lastOfflineNotifiedAt = null,
-        )
-        save(next)
+        col.document(userId).set(
+            mapOf(
+                "last_heartbeat_at" to timestamp.toTimestamp(),
+                "is_online" to true,
+                "power_save_mode" to powerSaveMode,
+                "last_offline_notified_at" to null,
+            ),
+            SetOptions.merge()
+        ).await()
         return existing
     }
 
@@ -134,17 +125,5 @@ class RealtimeDataRepository(private val firestore: Firestore) {
         lastOfflineNotifiedAt = getTimestamp("last_offline_notified_at")?.toLocalDateTime(),
         streamDownDetectedAt = getTimestamp("stream_down_detected_at")?.toLocalDateTime(),
         lastStreamDownNotifiedAt = getTimestamp("last_stream_down_notified_at")?.toLocalDateTime(),
-    )
-
-    private fun RealtimeData.toMap() = mapOf(
-        "score" to score,
-        "level" to level,
-        "updated_at" to LocalDateTime.now().toTimestamp(),
-        "last_heartbeat_at" to lastHeartbeatAt?.toTimestamp(),
-        "is_online" to isOnline,
-        "power_save_mode" to powerSaveMode,
-        "last_offline_notified_at" to lastOfflineNotifiedAt?.toTimestamp(),
-        "stream_down_detected_at" to streamDownDetectedAt?.toTimestamp(),
-        "last_stream_down_notified_at" to lastStreamDownNotifiedAt?.toTimestamp(),
     )
 }

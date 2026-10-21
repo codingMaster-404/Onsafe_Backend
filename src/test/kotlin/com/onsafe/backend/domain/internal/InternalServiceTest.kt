@@ -236,7 +236,6 @@ class InternalServiceTest {
 
         coVerify(exactly = 1) { realtimeDataRepository.updateScore("testUser", 42f, "주의") }
         coVerify(exactly = 0) { realtimeDataRepository.findByUserId(any()) }
-        coVerify(exactly = 0) { realtimeDataRepository.save(any()) }
     }
 
     @Test

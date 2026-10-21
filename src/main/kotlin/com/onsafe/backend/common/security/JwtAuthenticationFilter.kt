@@ -9,7 +9,6 @@ import org.springframework.http.HttpHeaders
 import org.springframework.http.MediaType
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
 import org.springframework.security.core.context.ReactiveSecurityContextHolder
-import org.springframework.stereotype.Component
 import org.springframework.web.server.ServerWebExchange
 import org.springframework.web.server.WebFilter
 import org.springframework.web.server.WebFilterChain
@@ -20,7 +19,8 @@ private const val BEARER_PREFIX = "Bearer "
 // Redis 조회 결과 — 거부(401)와 "확인 불가"(503)를 나눠야 장애를 토큰 문제로 오인하지 않는다.
 private enum class TokenStatus { VALID, REJECTED, UNKNOWN }
 
-@Component
+// 빈으로 등록하지 않는다 — SecurityConfig가 직접 만들어 보안 체인에만 넣는다. WebFilter 빈은 Spring이 일반 필터
+// 체인에도 자동 등록해, 보호 API마다 JWT 파싱·Redis 조회가 두 번 돌았다(인가 통과 후 컨트롤러 직전에 한 번 더).
 class JwtAuthenticationFilter(
     private val jwtProvider: JwtProvider,
     private val redis: ReactiveStringRedisTemplate,

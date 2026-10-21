@@ -544,14 +544,39 @@ class AuthServiceTest {
     }
 
     @Test
-    fun `로그아웃 - 본문이 없으면 블랙리스트만 하고 FCM은 건드리지 않는다`() = runTest {
+    fun `로그아웃 - 본문이 없으면 FCM은 건드리지 않고 LOGOUT은 기록한다`() = runTest {
+        val events = captureEvents()
         every { jwtProvider.getRemainingExpiry(any()) } returns Duration.ofMinutes(30)
         every { jwtProvider.blacklistKey(any()) } answers { "bl:hashed-" + firstArg<String>() }
         every { valueOps.set(any(), "1", any<Duration>()) } returns Mono.just(true)
+        every { jwtProvider.parse("access.token", TokenType.ACCESS) } returns TokenParseResult.Valid(
+            userId = "testUser",
+            issuedAt = Instant.parse("2026-09-10T00:00:00Z"),
+            authTime = null,
+            remainingExpiry = Duration.ofMinutes(30)
+        )
 
         authService.logout("access.token", "refresh.token", null)
 
         coVerify(exactly = 0) { notificationService.unregisterFcmToken(any(), any(), any()) }
+        // 예전에는 본문이 없으면 기록 전에 끝나 로그아웃 흔적이 남지 않았다.
+        assertEquals(SecurityEventType.LOGOUT, events.single().eventType)
+        assertEquals("testUser", events.single().userId)
+    }
+
+    @Test
+    fun `로그아웃 - 두 토큰 모두 읽지 못하면 FCM 해제·기록 없이 블랙리스트만 한다`() = runTest {
+        val events = captureEvents()
+        every { jwtProvider.getRemainingExpiry(any()) } returns Duration.ofMinutes(30)
+        every { jwtProvider.blacklistKey(any()) } answers { "bl:hashed-" + firstArg<String>() }
+        every { valueOps.set(any(), "1", any<Duration>()) } returns Mono.just(true)
+        every { jwtProvider.parse(any(), any()) } returns TokenParseResult.Invalid(ErrorCode.INVALID_TOKEN)
+
+        authService.logout("access.token", "refresh.token", LogoutRequest("fcm-1", "device1"))
+
+        coVerify(exactly = 0) { notificationService.unregisterFcmToken(any(), any(), any()) }
+        assertTrue(events.isEmpty())
+        verify(exactly = 2) { valueOps.set(any(), "1", any<Duration>()) }
     }
 
     @Test
@@ -668,6 +693,16 @@ class AuthServiceTest {
         coEvery { userRepository.existsByMail("new@example.com") } returns false
 
         authService.checkMail(CheckMailRequest(mail = "new@example.com"))
+    }
+
+    @Test
+    fun `이메일 중복 확인 - rate limit 키는 대소문자·공백을 정규화한다`() = runTest {
+        coEvery { userRepository.existsByMail(any()) } returns false
+
+        authService.checkMail(CheckMailRequest(mail = " New@Example.COM "))
+
+        // 대소문자만 바꿔 한도를 따로 세지 못하게 find-id와 같은 규칙으로 정규화한다.
+        coVerify { rateLimiter.requireAllowed("rl:check-mail:new@example.com", 10, 3600) }
     }
 
     // ── 보안 이벤트 기록 (C6) ────────────────────────────────────

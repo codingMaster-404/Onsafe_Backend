@@ -20,6 +20,7 @@ import com.onsafe.backend.domain.settings.repository.SettingsRepository
 import com.onsafe.backend.domain.user.model.dto.UserUpdateRequest
 import com.onsafe.backend.domain.user.model.entity.DeletionTask
 import com.onsafe.backend.domain.user.model.entity.User
+import com.onsafe.backend.domain.user.repository.LookupSaveResult
 import com.onsafe.backend.domain.user.repository.UserRepository
 import com.onsafe.backend.domain.user.service.UserService
 import io.mockk.Runs
@@ -81,7 +82,7 @@ class UserServiceTest {
         every { valueOps.get("reauth_ticket:ticket-1") } returns Mono.just("testUser")
         every { redis.delete("reauth_ticket:ticket-1") } returns Mono.just(1L)
         // 저장은 메일·전화 룩업 이동까지 한 트랜잭션으로 한다(B1) — 기본은 성공.
-        coEvery { userRepository.saveWithLookups(any(), any()) } returns true
+        coEvery { userRepository.saveWithLookups(any(), any()) } returns LookupSaveResult.SAVED
         userService = UserService(
             userRepository, settingsRepository, passwordEncoder, fallLogRepository,
             loginHistoryRepository, realtimeDataRepository, storageService,
@@ -265,7 +266,7 @@ class UserServiceTest {
     fun `주소 수정 - address와 addressDetail이 정상 저장된다`() = runTest {
         val savedSlot = slot<User>()
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        coEvery { userRepository.saveWithLookups(any(), capture(savedSlot)) } returns true
+        coEvery { userRepository.saveWithLookups(any(), capture(savedSlot)) } returns LookupSaveResult.SAVED
 
         val result = userService.updateUser("testUser", UserUpdateRequest(address = "서울시 강남구 테헤란로", addressDetail = "101호", reauthTicket = "ticket-1"))
 
@@ -277,7 +278,7 @@ class UserServiceTest {
     fun `주소 수정 - addressDetail 없이 address만 변경된다`() = runTest {
         val savedSlot = slot<User>()
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        coEvery { userRepository.saveWithLookups(any(), capture(savedSlot)) } returns true
+        coEvery { userRepository.saveWithLookups(any(), capture(savedSlot)) } returns LookupSaveResult.SAVED
 
         val result = userService.updateUser("testUser", UserUpdateRequest(address = "부산시 해운대구", reauthTicket = "ticket-1"))
 
@@ -289,7 +290,7 @@ class UserServiceTest {
     fun `비밀번호 변경 - currentPassword 일치 시 정상 변경된다`() = runTest {
         val savedSlot = slot<User>()
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        coEvery { userRepository.saveWithLookups(any(), capture(savedSlot)) } returns true
+        coEvery { userRepository.saveWithLookups(any(), capture(savedSlot)) } returns LookupSaveResult.SAVED
 
         val result = userService.updateUser("testUser", UserUpdateRequest(currentPassword = "oldPass", password = "newPass1234"))
 
@@ -402,13 +403,41 @@ class UserServiceTest {
     @Test
     fun `개인정보 수정 - 다른 계정이 쓰는 전화번호면 PHONE_ALREADY_EXISTS (B1)`() = runTest {
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        coEvery { userRepository.saveWithLookups(any(), any()) } returns false
+        coEvery { userRepository.saveWithLookups(any(), any()) } returns LookupSaveResult.PHONE_TAKEN
 
         val thrown = runCatching {
             userService.updateUser("testUser", UserUpdateRequest(phone = "010-9999-8888", reauthTicket = "ticket-1"))
         }.exceptionOrNull()
 
         assertEquals(ErrorCode.PHONE_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `개인정보 수정 - 메일·전화를 함께 바꾸다 전화만 겹치면 PHONE_ALREADY_EXISTS`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.saveWithLookups(any(), any()) } returns LookupSaveResult.PHONE_TAKEN
+
+        val thrown = runCatching {
+            userService.updateUser(
+                "testUser",
+                UserUpdateRequest(mail = "new@example.com", phone = "010-9999-8888", reauthTicket = "ticket-1")
+            )
+        }.exceptionOrNull()
+
+        // 예전에는 메일이 바뀌었다는 이유만으로 MAIL_ALREADY_EXISTS였다.
+        assertEquals(ErrorCode.PHONE_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
+    }
+
+    @Test
+    fun `개인정보 수정 - 다른 계정이 쓰는 메일이면 MAIL_ALREADY_EXISTS`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.saveWithLookups(any(), any()) } returns LookupSaveResult.MAIL_TAKEN
+
+        val thrown = runCatching {
+            userService.updateUser("testUser", UserUpdateRequest(mail = "taken@example.com", reauthTicket = "ticket-1"))
+        }.exceptionOrNull()
+
+        assertEquals(ErrorCode.MAIL_ALREADY_EXISTS, (thrown as BusinessException).errorCode)
     }
 
     // ── 비밀번호 확인·재인증 티켓 발급 (B5·B1) ────────────────────
@@ -438,7 +467,7 @@ class UserServiceTest {
     @Test
     fun `개인정보 수정 - 저장이 실패하면 재인증 티켓을 지우지 않는다 (재시도 가능)`() = runTest {
         coEvery { userRepository.findByUserId("testUser") } returns baseUser
-        coEvery { userRepository.saveWithLookups(any(), any()) } returns false
+        coEvery { userRepository.saveWithLookups(any(), any()) } returns LookupSaveResult.PHONE_TAKEN
 
         runCatching {
             userService.updateUser("testUser", UserUpdateRequest(phone = "010-9999-8888", reauthTicket = "ticket-1"))
@@ -494,7 +523,7 @@ class UserServiceTest {
         userService.deleteUser("testUser", "ticket-1")
 
         assertEquals(SecurityEventType.ACCOUNT_DELETED, events.single().eventType)
-        // 이력은 별도 컬렉션이라 계정이 사라진 뒤에도 조사에 쓸 수 있다.
+        // 계정 문서 삭제 전에 기록한다. 탈퇴 정리(purge)에서 다른 이력과 함께 파기된다.
         coVerifyOrder {
             loginHistoryRepository.save(any())
             userRepository.createDeletionTaskAndDeleteUser(any())
