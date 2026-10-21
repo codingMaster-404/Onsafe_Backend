@@ -1,5 +1,44 @@
 # Changelog
 
+## [Unreleased] - fix/kotlin-audit-back (2026-10-21)
+
+### Kotlin 점검 후속 — 상태 코드 예외·heartbeat 덮어쓰기·JWT 필터 2회·보호자 이력 삭제·LIVE 만료 시각 (API 스펙 v4.21)
+
+**변경 파일:** `ErrorCode.kt`, `GlobalExceptionHandler.kt`, `UserService.kt`, `UserRepository.kt`, `RealtimeDataRepository.kt`, `JwtAuthenticationFilter.kt`, `SecurityConfig.kt`, `AuthService.kt`, `LiveService.kt`, `LiveTokenResponse.kt`, `NotificationService.kt`, `FallLogController.kt`, `FallLogService.kt`, `FallLogRepository.kt`, `AccessGuard.kt`, `SecurityEventType.kt`, 테스트(`GlobalExceptionHandlerTest`·`RealtimeDataRepositoryTest`·`JwtFilterRegistrationTest`·`UserRepositoryTest`·`FallLogDeleteAccessTest` 신규 외), `v4.0_onsafe_api_spec.md`
+
+#### Added
+- `ErrorCode.API_NOT_FOUND`(404)·`UNSUPPORTED_MEDIA_TYPE`(415)·`LOG_NOT_CONFIRMED`(409)
+- `GlobalExceptionHandler.handleResponseStatusException` — Spring 상태 예외(없는 경로·Content-Type 등)를 상태 그대로 응답
+- 보안 이벤트 `FALL_LOG_DELETED` — 보호자가 피보호자 사고 이력을 삭제(보호자 명의·대상 피보호자)
+- LIVE 응답 `expires_at_epoch`(epoch 초) — `expires_at`(시간대 없음)은 유지
+- `LookupSaveResult`(SAVED·MAIL_TAKEN·PHONE_TAKEN) — 개인정보 수정 트랜잭션이 겹친 쪽을 돌려준다
+
+#### Changed
+- `DELETE /api/fall-logs/{user_id}/{log_id}`: **연결된 보호자도 삭제 가능**(연결 이후 이력만). 보호자는 확인하지 않은 위험 이벤트를 지울 수 없다(409). 본인·보호자 삭제 모두 영상(`fall-videos/{log_id}.mp4`)·알림 사본도 삭제(best-effort)
+- heartbeat가 `realtime_data` 문서 전체를 덮어쓰지 않고 heartbeat 4필드만 merge — `updated_at`은 AI 점수 갱신 시각으로만 바뀐다. 쓰는 곳이 없어진 `save`·`toMap` 삭제
+- `JwtAuthenticationFilter`를 빈으로 등록하지 않고 `SecurityConfig`가 직접 생성 — 보안 체인에서만 실행
+- LIVE 시작 시 LiveKit 토큰을 세션 저장·열람 기록·피보호자 요청보다 먼저 발급
+- FCM 토큰 정리: `INVALID_ARGUMENT`는 같은 발송에서 1건 이상 성공했을 때만 삭제(`SENDER_ID_MISMATCH`는 삭제 안 함)
+- `ACCOUNT_DELETED` 주석 정정 — 탈퇴 정리에서 `login_history`와 함께 파기된다(스펙과 동작은 원래 일치, 동작 변화 없음)
+
+#### Fixed
+- 없는 경로·지원하지 않는 Content-Type이 500 `INTERNAL_ERROR` + error 로그 → 404 `API_NOT_FOUND`·415 `UNSUPPORTED_MEDIA_TYPE`, 그 밖의 4xx는 상태 그대로 `INVALID_INPUT`
+- JWT 필터가 보호 API마다 2번 실행(JWT 파싱·Redis MGET 2회, 두 번째 조회만 실패하면 503)
+- heartbeat가 2분마다 `updated_at`을 갱신해 AI가 멈춰도 최신처럼 보이고, 읽은 뒤 들어온 점수·워치독 쓰기를 되돌릴 수 있던 문제
+- 앱의 보호자 이력 삭제가 전부 403
+- 메일·전화를 함께 바꾸다 전화만 겹쳐도 `MAIL_ALREADY_EXISTS`
+- 로그아웃 본문(FCM)이 없으면 `LOGOUT`이 기록되지 않음
+- `check-mail` rate limit 키가 대소문자·공백별로 따로 셈 — `trim().lowercase()`
+- LiveKit 설정이 비어 503이어도 피보호자 앱이 깨어나고 열람 기록·세션이 남음
+
+#### Deployment (주의)
+- **앱 변경 없이 배포 가능.** 앱 이력 화면은 이미 보호자 삭제를 호출하고 있어 서버 배포만으로 열린다(409는 앱이 서버 메시지를 그대로 보여 준다)
+- 배포 후 확인: 서버 기동(JWT 필터 등록 방식 변경 — 로컬에서는 컨텍스트 테스트·bootJar로만 확인), 보호 API 정상 응답, 보호자 이력 삭제
+- 버킷 lifecycle(낙상 영상 30일) 적용 여부 확인 — 배포 워크플로가 성공한 적이 없어 미적용일 수 있다. 이번 변경으로 삭제한 이력의 영상은 즉시 지워진다
+- 프론트 요청: 보호자 `LiveViewController.deadlineMillis`가 `expires_at_epoch`를 우선 쓰도록(현재는 `expires_at`을 기기 시간대로 해석하고, 범위를 벗어나면 지금+5분으로 대체)
+- FCM 전송 로직 변경 — 만료 토큰 정리 범위가 `INVALID_ARGUMENT`(다른 기기 전달 성공 시)로 넓어진다
+- `NotificationService.kt`는 `feat/notification-channel-back`과 함께 고친다(함수는 다름 — 이 브랜치는 `cleanUpFailedTokens`). `InternalServiceTest.kt`에서 1줄 삭제
+
 ## [Unreleased] - fix/fall-log-saved-flag-back (2026-10-20)
 
 ### 낙상 기록 저장 여부 전달 — 저장을 건너뛴 기록에 log_id를 내려주지 않음 (API 스펙 v4.20)
