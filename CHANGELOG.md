@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased] - fix/pairing-code-cleanup-back (2026-10-22)
+
+### 페어링 승인 시 피보호자에게 남은 코드 삭제 (API 스펙 v4.23)
+
+**변경 파일:** `GuardianService.kt`, 테스트(`GuardianServicePairingEventTest`·`GuardianServiceLiveTest`), `v4.0_onsafe_api_spec.md`
+
+#### Fixed
+- 연결 직후 최대 15분 동안 남은 페어링 코드로 다른 사람이 연결을 요청할 수 있던 문제 — 앱은 연결 요청이 오면(코드 소진) 바로 새 코드를 발급해 승인 시점에도 코드가 살아 있었고, 피보호자가 그 요청을 승인하면 기존 보호자가 밀려났다. 연결 중 코드 발급 금지(`ELDER_ALREADY_HAS_GUARDIAN`) 정책을 우회하는 경로였다
+
+#### Changed
+- `approvePairingRequest`: 연결이 성립하면 `pairing_code_owner:{elder}` GETDEL → 남은 코드가 있으면 `pairing_code:{code}` DEL(탈퇴 정리와 같은 방식, 빈 DEL 없음). 승인 실패(409 등)면 건드리지 않는다. 삭제 실패는 경고 로그만 남기고 승인은 완료(남은 코드는 15분 TTL로 소멸)
+
+#### Deployment (주의)
+- **앱 변경 없이 배포 가능.** API 요청·응답 형식 변경 없음. 앱은 연결 뒤 코드 표시·재발급을 멈춘다
+- 남는 경합: 승인 전에 남은 코드로 이미 들어온 다른 요청은 그대로 승인할 수 있다(교체 안내 유지). 승인과 거의 같은 순간의 앱 재발급이 삭제보다 늦게 쓰이면 코드 1개가 남을 수 있다(창이 매우 짧아 수용)
+- 프론트 전달: 승인 창이 요청 1개만 보관해 겹친 요청 중 먼저 온 것은 승인할 수 없음, 백그라운드 수신 시 소진된 코드가 다음 재발급까지 화면에 남음, 요청마다 재발급이 늘어 시간당 발급 한도(5회)에 걸릴 수 있음
+
 ## [Unreleased] - feat/notification-channel-back (2026-10-22)
 
 ### 알림 채널 분리 — 위험·주의 채널, 피보호자 본인 푸시 제외, 알림함 응답 필드 (API 스펙 v4.22)
