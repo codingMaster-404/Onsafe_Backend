@@ -17,6 +17,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
@@ -60,6 +61,9 @@ class GuardianServicePairingEventTest {
         coEvery { userRepository.findByUserId("guardianNew") } returns user("guardianNew")
         coEvery { guardianLinkRepository.createOrReplace(any()) } returns
             GuardianLinkRepository.ReplaceResult.Created(displaced = displaced)
+        // 승인 후 남은 페어링 코드 정리 — 기본은 남은 코드 없음
+        every { valueOps.getAndDelete("pairing_code_owner:elder1") } returns Mono.empty()
+        every { redis.delete(*anyVararg<String>()) } returns Mono.just(1L)
     }
 
     private fun LoginHistory.summary() = Triple(eventType, userId, targetUserId)
@@ -175,6 +179,55 @@ class GuardianServicePairingEventTest {
         coVerify(exactly = 0) {
             notificationService.sendNotification(match { it.data?.get("event") == "pairing_displaced" && it.subjectUserId != null })
         }
+    }
+
+    // ── 승인 시 남은 페어링 코드 삭제 ─────────────────────
+    // 앱은 연결 요청이 오면 바로 새 코드를 띄운다 — 승인 때 지우지 않으면 연결 직후 최대 15분 동안 그 코드로 교체 요청이 들어온다.
+
+    @Test
+    fun `승인 - 피보호자에게 남은 페어링 코드를 지운다`() = runTest {
+        captureEvents()
+        givenApprovable(displaced = emptyList())
+        every { valueOps.getAndDelete("pairing_code_owner:elder1") } returns Mono.just("654321")
+
+        service.approvePairingRequest("elder1", "req1")
+
+        verify(exactly = 1) { redis.delete("pairing_code:654321") }
+    }
+
+    @Test
+    fun `승인 - 남은 코드가 없으면 DEL을 보내지 않는다`() = runTest {
+        captureEvents()
+        givenApprovable(displaced = emptyList())
+
+        service.approvePairingRequest("elder1", "req1")
+
+        verify(exactly = 1) { valueOps.getAndDelete("pairing_code_owner:elder1") }
+        verify(exactly = 0) { redis.delete(*anyVararg<String>()) }
+    }
+
+    @Test
+    fun `승인 - 코드 정리가 실패해도 연결 승인은 완료되고 보호자에게 알린다`() = runTest {
+        captureEvents()
+        givenApprovable(displaced = emptyList())
+        every { valueOps.getAndDelete("pairing_code_owner:elder1") } returns Mono.error(RuntimeException("redis down"))
+
+        val ward = service.approvePairingRequest("elder1", "req1")
+
+        assertEquals("elder1", ward.userId)
+        coVerify(exactly = 1) { notificationService.sendNotification(match { it.data?.get("event") == "pairing_approved" }) }
+    }
+
+    @Test
+    fun `승인 실패 - 연결이 성립하지 않으면 남은 코드를 건드리지 않는다`() = runTest {
+        every { valueOps.getAndDelete("pairing_request:req1") } returns Mono.just("guardianNew:elder1")
+        coEvery { userRepository.findByUserId("elder1") } returns user("elder1")
+        coEvery { userRepository.findByUserId("guardianNew") } returns user("guardianNew")
+        coEvery { guardianLinkRepository.createOrReplace(any()) } returns GuardianLinkRepository.ReplaceResult.SamePairExists
+
+        runCatching { service.approvePairingRequest("elder1", "req1") }
+
+        verify(exactly = 0) { valueOps.getAndDelete("pairing_code_owner:elder1") }
     }
 
     @Test
