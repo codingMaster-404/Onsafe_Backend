@@ -13,8 +13,10 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
+import com.onsafe.backend.domain.notification.model.dto.NotificationLogResponse
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.model.entity.FcmToken
+import com.onsafe.backend.domain.notification.model.entity.Notification
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.notification.service.NotificationService
@@ -460,6 +462,103 @@ class NotificationServiceTest {
         coVerify(exactly = 1) { notificationRepository.deleteByUserAndSubject("g1", "testUser") }
         coVerify(exactly = 1) { notificationRepository.deleteByUserAndLogIds("g1", listOf("log1", "log2")) }
         coVerify(exactly = 0) { notificationRepository.deleteByLogIds(any()) }  // 본인 사본까지 지우는 탈퇴용 경로는 쓰지 않는다
+    }
+
+    // ── 피보호자 본인 낙상 알림은 알림함에만 (N2) ───────────────
+
+    @Test
+    fun `낙상 알림 - 본인은 알림함에만 남기고 FCM은 보호자에게만 보낸다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.findByUserId("g1") } returns baseUser.copy(userId = "g1")
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns listOf("g1")
+        coEvery { fcmTokenRepository.findAll("g1") } returns tokens("g1-phone")
+        stubMulticast(true)
+
+        notificationService.notifyElderAndGuardians("testUser", "낙상 감지", "확인해주세요", logId = "log1", fall = true,
+            data = mapOf("event" to "fall_detected", "log_id" to "log1", "user_id" to "testUser"))
+
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "testUser" }) }
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" }) }
+        // 본인 기기 토큰은 조회조차 하지 않는다 — 백그라운드에서 시스템이 띄우던 본인 낙상 알림이 사라진다
+        coVerify(exactly = 0) { fcmTokenRepository.findAll("testUser") }
+        coVerify(exactly = 1) { fcmTokenRepository.findAll("g1") }
+        val fcm = FirebaseMessaging.getInstance()
+        verify(exactly = 1) { fcm.sendEachForMulticastAsync(any<MulticastMessage>()) }
+    }
+
+    @Test
+    fun `재알림 - 본인은 알림함에만, 보호자에게만 FCM`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.findByUserId("g1") } returns baseUser.copy(userId = "g1")
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns listOf("g1")
+        coEvery { fcmTokenRepository.findAll(any()) } returns emptyList()
+
+        notificationService.notifyElderAndGuardians("testUser", "확인이 필요합니다", "이전 위험 알림이 아직 확인되지 않았습니다.",
+            logId = "log1", data = mapOf("event" to "fall_escalated", "log_id" to "log1", "user_id" to "testUser"))
+
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "testUser" }) }
+        coVerify(exactly = 0) { fcmTokenRepository.findAll("testUser") }
+        coVerify(exactly = 1) { fcmTokenRepository.findAll("g1") }
+    }
+
+    @Test
+    fun `보호자가 없으면 본인 알림함에만 남고 푸시를 받는 사람이 없다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns emptyList()
+
+        notificationService.notifyElderAndGuardians("testUser", "확인이 필요합니다", "이전 위험 알림이 아직 확인되지 않았습니다.",
+            logId = "log1", data = mapOf("event" to "fall_escalated", "log_id" to "log1", "user_id" to "testUser"))
+
+        // 연결 해제 후 재알림 — 수용한 정책(해제 전 경고로 안내)
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "testUser" }) }
+        coVerify(exactly = 0) { fcmTokenRepository.findAll(any()) }
+    }
+
+    @Test
+    fun `피보호자에게 직접 보내는 다른 알림은 그대로 FCM 발송`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { fcmTokenRepository.findAll("testUser") } returns tokens("phone")
+        stubMulticast(true)
+
+        notificationService.sendNotification(
+            NotificationRequest(userId = "testUser", title = "보호자 연결", body = "연결되었습니다.", data = mapOf("event" to "pairing_approved"))
+        )
+
+        coVerify(exactly = 1) { fcmTokenRepository.findAll("testUser") }
+        val fcm = FirebaseMessaging.getInstance()
+        verify(exactly = 1) { fcm.sendEachForMulticastAsync(any<MulticastMessage>()) }
+    }
+
+    // ── 알림함 event·elder_user_id (N4) ─────────────────────────
+
+    @Test
+    fun `알림함에 푸시 data의 event를 함께 저장한다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.findByUserId("g1") } returns baseUser.copy(userId = "g1")
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns listOf("g1")
+        coEvery { fcmTokenRepository.findAll(any()) } returns emptyList()
+
+        notificationService.notifyElderAndGuardians("testUser", "낙상 감지", "확인해주세요", logId = "log1", fall = true,
+            data = mapOf("event" to "fall_detected", "log_id" to "log1", "user_id" to "testUser"))
+        notificationService.notifyGuardiansCameraOffline("testUser")
+
+        // 본인 사본(알림함만)에도 event가 남는다
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "testUser" && it.event == "fall_detected" }) }
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.event == "fall_detected" }) }
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.event == "camera_offline" }) }
+    }
+
+    @Test
+    fun `응답 - elder_user_id는 대상 피보호자, 대상 없는 알림은 null`() {
+        val guardianCopy = Notification(userId = "g1", title = "t", body = "b", subjectUserId = "elder1", event = "fall_detected")
+        val pairingRequest = Notification(userId = "elder1", title = "보호자 연결 요청", body = "b", event = "pairing_request")
+        val ownCopy = Notification(userId = "elder1", title = "t", body = "b", subjectUserId = "elder1", event = "fall_detected")
+
+        assertEquals("elder1", NotificationLogResponse.from(guardianCopy).elderUserId)
+        assertEquals("fall_detected", NotificationLogResponse.from(guardianCopy).event)
+        assertEquals(null, NotificationLogResponse.from(pairingRequest).elderUserId)
+        // 본인 알림의 대상은 본인
+        assertEquals("elder1", NotificationLogResponse.from(ownCopy).elderUserId)
     }
 
     // ── 보호자 사본 본문 대체 (S6) ─────────────────────────────

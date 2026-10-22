@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased] - feat/notification-channel-back (2026-10-22)
+
+### 알림 채널 분리 — 위험·주의 채널, 피보호자 본인 푸시 제외, 알림함 응답 필드 (API 스펙 v4.22)
+
+**변경 파일:** `InternalService.kt`, `NotificationService.kt`, `Notification.kt`, `NotificationRepository.kt`, `NotificationLogResponse.kt`, 테스트(`NotificationChannelTest` 신규·`InternalServiceTest`·`NotificationServiceTest`·`NotificationRepositoryTest`), `v4.0_onsafe_api_spec.md`
+
+#### Added
+- 낙상 알림 채널 `onsafe_danger_v1`(위험: 경보음+진동)·`onsafe_warning_v1`(주의: 진동만) — `channelFor(event, fall, score)`가 앱 `PushNotifications.fallAlertLevel`과 같은 규칙으로 고른다(재알림·낙상·점수 없음·점수 > 75 → 위험)
+- `fall_detected` FCM `data`에 `fall`(`"true"`/`"false"`) — 주의 수준도 같은 `event`라 `score`만으로는 낙상 여부를 알 수 없다
+- 알림 문서에 `event`(푸시 `data.event` 코드) 저장, 알림함 응답(`GET /api/notifications/{user_id}`·읽음 `PATCH`)에 `event`·`elder_user_id`(저장 중인 `subject_user_id`) — 도입 전 문서는 null, 백필 없음(보관 7일)
+- API 스펙에 알림함 API(4절)·`notifications` 컬렉션 표 — 그동안 명세에 없었다
+
+#### Changed
+- 낙상·재알림(`notifyElderAndGuardians`)은 피보호자 본인에게 FCM을 보내지 않고 알림함에만 저장한다 — 본인 기기는 대개 카메라라 앱이 백그라운드면 본인 기기가 울렸다. 연결된 보호자가 없으면(해제 후 재알림 등) 푸시를 받는 사람이 없다(수용한 정책)
+- 낙상 계열 외(오프라인·감지 중단 등)는 `onsafe_alerts`, `pairing*`은 `onsafe_pairing` 그대로
+
+#### Deployment (주의)
+- **위험·주의 채널을 만든 앱 버전과 동시 배포.** 서버만 먼저 나가도 구버전 앱은 없는 채널이라 FCM이 manifest 기본 채널(`onsafe_alerts`)로 표시해 소리는 지금과 같다. 피보호자 본인 낙상 푸시는 서버 배포 즉시 사라진다
+- 채널 ID는 앱 값과 문자열이 같아야 한다 — 앱이 채널 `_v` 번호를 올리면 서버도 같이 바꿔 동시 배포
+- FCM 전송 로직 변경 — 본인 낙상·재알림 푸시를 보내지 않으므로, 피보호자 본인의 만료 토큰은 낙상 알림 발송으로는 정리되지 않는다(페어링 요청 등 본인에게 가는 다른 푸시를 보낼 때 정리된다)
+- 프론트 전달: ① 피보호자 계정의 홈·알림 목록이 본인 낙상 FCM 수신으로 즉시 갱신되던 동작이 멈춘다(카메라 모드는 무관) ② 해제 경고 문구 — 해제 후 미확인 위험 이벤트의 재알림은 아무에게도 푸시되지 않는다 ③ 알림 DTO에 `event`·`elder_user_id` 추가(모르는 필드는 Gson이 무시해 추가 전에도 호환)
+
 ## [Unreleased] - fix/kotlin-audit-back (2026-10-21)
 
 ### Kotlin 점검 후속 — 상태 코드 예외·heartbeat 덮어쓰기·JWT 필터 2회·보호자 이력 삭제·LIVE 만료 시각 (API 스펙 v4.21)

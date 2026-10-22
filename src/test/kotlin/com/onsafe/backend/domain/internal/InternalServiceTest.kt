@@ -191,10 +191,10 @@ class InternalServiceTest {
         }
     }
 
-    // ── 알림 data에 log_id/user_id/score 검증 ─────────────────────
+    // ── 알림 data에 log_id/user_id/score/fall 검증 ─────────────────
 
     @Test
-    fun `알림 data에 log_id, user_id, score가 포함된다`() = runTest {
+    fun `알림 data에 log_id, user_id, score, fall이 포함된다`() = runTest {
         val dataSlot = slot<Map<String, String>>()
         coEvery { fallLogRepository.save(any()) } answers { firstArg() }
         coEvery {
@@ -209,6 +209,24 @@ class InternalServiceTest {
         assertEquals("log001", data["log_id"])
         assertEquals("testUser", data["user_id"])
         assertEquals("90.0", data["score"])
+        assertEquals("true", data["fall"])
+    }
+
+    @Test
+    fun `낙상이 아닌 주의·위험 수준이면 data의 fall은 false`() = runTest {
+        val dataSlot = slot<Map<String, String>>()
+        coEvery { fallLogRepository.save(any()) } answers { firstArg() }
+        coEvery {
+            notificationService.notifyElderAndGuardians(
+                elderUserId = any(), title = any(), body = any(), logId = any(), score = any(), fall = any(), data = capture(dataSlot)
+            )
+        } just Runs
+
+        internalService.saveFallLog(baseRequest.copy(fall = false, score = 60f))
+
+        // 앱은 fall=false·score ≤ 75면 주의 채널로 본다.
+        assertEquals("false", dataSlot.captured["fall"])
+        assertEquals("fall_detected", dataSlot.captured["event"])
     }
 
     // ── isConfirmed 기본값 검증 ───────────────────────────────────

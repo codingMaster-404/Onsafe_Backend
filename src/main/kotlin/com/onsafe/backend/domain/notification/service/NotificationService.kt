@@ -33,11 +33,31 @@ import java.time.Duration
 import java.time.LocalDateTime
 
 // 앱(PushNotifications.kt)이 만든 알림 채널 ID. 서버가 android.notification.channel_id로 실어
-// 보내야 백그라운드 알림에도 채널이 적용된다.
-private const val CHANNEL_ALERTS = "onsafe_alerts"   // 낙상·오프라인 등 즉시 확인이 필요한 알림
-private const val CHANNEL_PAIRING = "onsafe_pairing" // 보호자 연결 상태 변화
+// 보내야 백그라운드 알림에도 채널이 적용된다. **앱의 CHANNEL_* 값과 반드시 같아야 한다.**
+// 앱에 없는 ID면 FCM이 기본 채널(앱 manifest의 onsafe_alerts)로 표시한다.
+internal const val CHANNEL_ALERTS = "onsafe_alerts"   // 오프라인·감지 중단 등 즉시 확인이 필요한 알림
+internal const val CHANNEL_PAIRING = "onsafe_pairing" // 보호자 연결 상태 변화
+// 낙상 알림 위험·주의 채널. 앱이 소리·진동을 바꾸면 _v 번호를 올리므로 그때 서버도 같이 바꿔 동시 배포해야 한다.
+internal const val CHANNEL_DANGER = "onsafe_danger_v1"   // 위험: 경보음 + 진동
+internal const val CHANNEL_WARNING = "onsafe_warning_v1" // 주의: 진동만
 private const val EVENT_KEY = "event"
 private const val PAIRING_EVENT_PREFIX = "pairing"
+private const val FALL_EVENT_PREFIX = "fall"
+private const val FALL_ESCALATED_EVENT = "fall_escalated"
+
+/**
+ * 알림 채널 판정 — 앱 `PushNotifications.fallAlertLevel`과 같은 규칙이어야 포그라운드(앱이 판정)와
+ * 백그라운드(서버 지정 채널로 시스템이 표시)가 같은 소리·진동이 된다.
+ *
+ * 낙상 계열(event가 `fall`로 시작): 재알림·낙상·점수 없음·점수 > 75 → 위험, 그 외 → 주의(주의 수준도 같은 event로 보낸다).
+ * 그 밖: `pairing*` → 연결 채널, 나머지 → 안전 알림 채널.
+ */
+internal fun channelFor(event: String?, fall: Boolean, score: Float?): String = when {
+    event?.startsWith(PAIRING_EVENT_PREFIX) == true -> CHANNEL_PAIRING
+    event?.startsWith(FALL_EVENT_PREFIX) != true -> CHANNEL_ALERTS
+    event == FALL_ESCALATED_EVENT || fall || score == null || score > RiskLevel.DANGER_THRESHOLD -> CHANNEL_DANGER
+    else -> CHANNEL_WARNING
+}
 
 @Service
 class NotificationService(
@@ -59,7 +79,8 @@ class NotificationService(
 
     // 이미 조회해둔 User가 있는 호출부(notifyElderAndGuardians)가 같은 유저를 다시 조회하지
     // 않도록 분리한 내부 버전. 공개 API인 sendNotification(request)는 여전히 직접 조회한다.
-    private suspend fun sendNotification(user: User, request: NotificationRequest): NotificationResponse {
+    // [push]가 false면 알림함에만 남기고 FCM은 보내지 않는다(피보호자 본인 낙상 알림).
+    private suspend fun sendNotification(user: User, request: NotificationRequest, push: Boolean = true): NotificationResponse {
         // FCM 발송 성공/실패/토큰 없음과 무관하게 알림 목록에는 항상 남긴다 — 목록 API가
         // push 전송 결과에 의존하지 않고 "무슨 알림이 발생했는지"를 그대로 반영해야 하기 때문.
         notificationRepository.save(
@@ -71,8 +92,12 @@ class NotificationService(
                 score = request.score,
                 fall = request.fall,
                 subjectUserId = request.subjectUserId,
+                event = request.data?.get(EVENT_KEY),
             )
         )
+        if (!push) {
+            return NotificationResponse(status = "ok", message = "알림함에만 저장했습니다.", fcmMessageId = "")
+        }
 
         // 사용자가 설정에서 알림을 껐다면 FCM 발송만 건너뛴다 — 위 저장은 그대로 두어 알림함에서는
         // 확인할 수 있게 한다. 단, 낙상·위험 수준 이벤트는 안전상 사용자 설정과 무관하게 강제 발송한다.
@@ -101,7 +126,7 @@ class NotificationService(
             // 앱이 백그라운드·종료 상태면 onMessageReceived가 호출되지 않고 시스템이 알림을 직접
             // 표시한다. 이때 channel_id가 없으면 앱이 만든 채널(onsafe_alerts: IMPORTANCE_HIGH)이
             // 적용되지 않아 낙상 알림이 소리·헤드업 없이 조용히 쌓인다. 서버가 채널을 지정해야 한다.
-            .setAndroidConfig(androidConfigFor(request.data?.get(EVENT_KEY)))
+            .setAndroidConfig(androidConfigFor(request))
         request.data?.forEach { (k, v) -> messageBuilder.putData(k, v) }
 
         val batch = try {
@@ -181,8 +206,8 @@ class NotificationService(
     }
 
     // 앱이 만든 채널 ID와 반드시 같아야 한다(프론트 PushNotifications.CHANNEL_*).
-    private fun androidConfigFor(event: String?): AndroidConfig {
-        val channelId = if (event?.startsWith(PAIRING_EVENT_PREFIX) == true) CHANNEL_PAIRING else CHANNEL_ALERTS
+    private fun androidConfigFor(request: NotificationRequest): AndroidConfig {
+        val channelId = channelFor(request.data?.get(EVENT_KEY), request.fall, request.score)
         return AndroidConfig.builder()
             .setPriority(AndroidConfig.Priority.HIGH)
             .setNotification(AndroidNotification.builder().setChannelId(channelId).build())
@@ -213,10 +238,12 @@ class NotificationService(
     }
 
     /**
-     * 피보호자 본인 + 연결된 보호자 전원에게 알림을 보낸다. 발송 대상별로 개별 실패를 격리해
-     * 한 명(예: 만료된 FCM 토큰) 실패가 나머지 수신자 발송을 막지 않게 한다. 본인 발송(FCM 네트워크
-     * 호출 포함)과 보호자 목록 조회·보호자 발송은 서로 데이터 의존이 없어 전부 병렬로 처리해
-     * 보호자 수·본인 발송 지연에 비례해 전체 시간이 늘어나지 않게 한다.
+     * 낙상·재알림 — 연결된 보호자 전원에게 알림을 보내고, 피보호자 본인은 **알림함에만** 남긴다(FCM 없음).
+     * 본인 기기는 대개 카메라라 앱이 본인 낙상 알림을 이미 숨기는데(계정 기준, 포그라운드), 백그라운드면 시스템이
+     * 서버 알림을 바로 띄워 본인 기기가 울렸다. 연결 해제 후 재알림처럼 보호자가 없으면 푸시를 받는 사람이 없다(수용한 정책).
+     *
+     * 수신자별 실패를 격리해 한 명(예: 만료된 FCM 토큰) 실패가 나머지 수신자를 막지 않게 하고,
+     * 본인 저장과 보호자 목록 조회·보호자 발송은 서로 데이터 의존이 없어 병렬로 처리한다.
      *
      * [guardianBody]가 있으면 보호자 사본 본문만 그것으로 바꾼다(피보호자 이름 접두는 유지) — 카메라 오프라인 중
      * 재알림처럼 보호자에게만 다른 행동을 안내할 때 쓴다(S6). 본인 사본은 항상 [body].
@@ -237,13 +264,13 @@ class NotificationService(
             val elderSend = async {
                 runCatching {
                     val elder = elderDeferred.await() ?: throw BusinessException(ErrorCode.USER_NOT_FOUND)
-                    sendNotification(elder, NotificationRequest(elderUserId, title, body, logId, score, fall, data, subjectUserId = elderUserId))
+                    sendNotification(elder, NotificationRequest(elderUserId, title, body, logId, score, fall, data, subjectUserId = elderUserId), push = false)
                 }.onFailure { e -> log.warn("알림 전송 실패 (userId: $elderUserId): ${e.message}") }
             }
 
             // 보호자 목록 조회와 elder 조회 실패를 여기서 직접 await()하면 coroutineScope의
             // 구조적 동시성 때문에 이미 실행 중인 elderSend까지 취소되며 함수 전체가 예외를 던진다 —
-            // "피보호자 본인 발송은 보호자 쪽 실패와 무관하게 항상 이뤄져야 한다"는 이 함수의 격리
+            // "피보호자 본인 알림함 저장은 보호자 쪽 실패와 무관하게 항상 이뤄져야 한다"는 이 함수의 격리
             // 원칙이 깨진다. runCatching으로 감싸 실패해도 빈 목록/폴백 이름으로 계속 진행한다.
             val guardianIds = runCatching { guardianLinkRepository.findGuardiansOf(elderUserId) }
                 .onFailure { e -> log.warn("보호자 목록 조회 실패 (elderUserId: $elderUserId): ${e.message}") }
