@@ -264,6 +264,10 @@ class GuardianService(
                 throw BusinessException(ErrorCode.ROLE_CONFLICT_ALREADY_GUARDIAN)
         }
 
+        // 연결 전에 발급된 피보호자 코드를 지운다 — 앱은 연결 요청이 오면 바로 새 코드를 띄우므로 승인 시점에도 코드가
+        // 살아 있다. 두면 연결 직후 최대 15분 동안 그 코드로 다른 사람이 교체 요청을 보낼 수 있다(연결 중 발급 금지 우회).
+        invalidatePairingCode(elderUserId)
+
         // 대체된 파트너(들)에게 해제 통지 — "당신은 이제 A의 보호자가 아닙니다" 성격.
         // 이 새 페어링에 참여하는 두 당사자(guardian, elder)는 제외해야 자기 자신이 자기 페어링에
         // 대해 해제 알림을 받는 어색함이 안 생긴다.
@@ -409,6 +413,17 @@ class GuardianService(
                 )
             )
         }.onFailure { e -> log.warn("페어링 해제 FCM 실패 — counterpartUserId=$counterpartUserId cause=${e.message}") }
+    }
+
+    // 연결은 이미 성립했으므로 실패해도 승인을 되돌리지 않는다 — 남은 코드는 TTL(15분)로 사라진다.
+    // 지울 키가 없으면 DEL을 보내지 않는다 — 인자 없는 DEL은 Redis가 오류로 거부한다(탈퇴 정리와 같은 방식).
+    private suspend fun invalidatePairingCode(elderUserId: String) {
+        runCatching {
+            redisGuarded {
+                val code = redis.opsForValue().getAndDelete("pairing_code_owner:$elderUserId").awaitFirstOrNull()
+                if (code != null) redis.delete("pairing_code:$code").awaitSingle()
+            }
+        }.onFailure { e -> log.warn("승인 후 남은 페어링 코드 삭제 실패 — elderUserId=$elderUserId cause=${e.message}") }
     }
 
     // 정리 실패가 해제·교체를 막지 않게 한다 — 남은 알림은 7일 보관 기간이 지나면 사라진다(E1).

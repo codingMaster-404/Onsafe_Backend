@@ -37,7 +37,11 @@ class GuardianServiceLiveTest {
     private val service = GuardianService(
         guardianLinkRepository, userRepository, notificationService, redis, rateLimiter, codeGenerator, terminator,
         settingsService, mockk(relaxed = true), mockk(relaxed = true)
-    ).also { every { redis.opsForValue() } returns valueOps }
+    ).also {
+        every { redis.opsForValue() } returns valueOps
+        // 승인 후 남은 페어링 코드 정리 — 이 클래스는 영상 동작만 보므로 남은 코드 없음으로 둔다
+        every { valueOps.getAndDelete("pairing_code_owner:elder1") } returns Mono.empty()
+    }
 
     private fun user(id: String) = User(
         userId = id, password = "x", name = id, phone = "010-0000-0000", mail = "$id@test.com",
