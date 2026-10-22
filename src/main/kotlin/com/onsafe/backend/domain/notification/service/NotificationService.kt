@@ -92,6 +92,7 @@ class NotificationService(
                 score = request.score,
                 fall = request.fall,
                 subjectUserId = request.subjectUserId,
+                event = request.data?.get(EVENT_KEY),
             )
         )
         if (!push) {

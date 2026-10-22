@@ -13,8 +13,10 @@ import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.domain.guardian.repository.GuardianLinkRepository
 import com.onsafe.backend.domain.logs.model.entity.FallLog
 import com.onsafe.backend.domain.logs.repository.FallLogRepository
+import com.onsafe.backend.domain.notification.model.dto.NotificationLogResponse
 import com.onsafe.backend.domain.notification.model.dto.NotificationRequest
 import com.onsafe.backend.domain.notification.model.entity.FcmToken
+import com.onsafe.backend.domain.notification.model.entity.Notification
 import com.onsafe.backend.domain.notification.repository.FcmTokenRepository
 import com.onsafe.backend.domain.notification.repository.NotificationRepository
 import com.onsafe.backend.domain.notification.service.NotificationService
@@ -525,6 +527,38 @@ class NotificationServiceTest {
         coVerify(exactly = 1) { fcmTokenRepository.findAll("testUser") }
         val fcm = FirebaseMessaging.getInstance()
         verify(exactly = 1) { fcm.sendEachForMulticastAsync(any<MulticastMessage>()) }
+    }
+
+    // ── 알림함 event·elder_user_id (N4) ─────────────────────────
+
+    @Test
+    fun `알림함에 푸시 data의 event를 함께 저장한다`() = runTest {
+        coEvery { userRepository.findByUserId("testUser") } returns baseUser
+        coEvery { userRepository.findByUserId("g1") } returns baseUser.copy(userId = "g1")
+        coEvery { guardianLinkRepository.findGuardiansOf("testUser") } returns listOf("g1")
+        coEvery { fcmTokenRepository.findAll(any()) } returns emptyList()
+
+        notificationService.notifyElderAndGuardians("testUser", "낙상 감지", "확인해주세요", logId = "log1", fall = true,
+            data = mapOf("event" to "fall_detected", "log_id" to "log1", "user_id" to "testUser"))
+        notificationService.notifyGuardiansCameraOffline("testUser")
+
+        // 본인 사본(알림함만)에도 event가 남는다
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "testUser" && it.event == "fall_detected" }) }
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.event == "fall_detected" }) }
+        coVerify(exactly = 1) { notificationRepository.save(match { it.userId == "g1" && it.event == "camera_offline" }) }
+    }
+
+    @Test
+    fun `응답 - elder_user_id는 대상 피보호자, 대상 없는 알림은 null`() {
+        val guardianCopy = Notification(userId = "g1", title = "t", body = "b", subjectUserId = "elder1", event = "fall_detected")
+        val pairingRequest = Notification(userId = "elder1", title = "보호자 연결 요청", body = "b", event = "pairing_request")
+        val ownCopy = Notification(userId = "elder1", title = "t", body = "b", subjectUserId = "elder1", event = "fall_detected")
+
+        assertEquals("elder1", NotificationLogResponse.from(guardianCopy).elderUserId)
+        assertEquals("fall_detected", NotificationLogResponse.from(guardianCopy).event)
+        assertEquals(null, NotificationLogResponse.from(pairingRequest).elderUserId)
+        // 본인 알림의 대상은 본인
+        assertEquals("elder1", NotificationLogResponse.from(ownCopy).elderUserId)
     }
 
     // ── 보호자 사본 본문 대체 (S6) ─────────────────────────────
