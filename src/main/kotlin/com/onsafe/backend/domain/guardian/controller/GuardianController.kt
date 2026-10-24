@@ -30,7 +30,7 @@ class GuardianController(
 
     @Operation(
         summary = "페어링 코드 발급 (피보호자용)",
-        description = "5분간 유효한 1회용 6자리 코드를 발급합니다. 재발급 시 이전 코드는 즉시 무효화됩니다.",
+        description = "15분간 유효한 1회용 6자리 코드를 발급합니다. 재발급 시 이전 코드는 즉시 무효화됩니다.",
         security = [SecurityRequirement(name = "BearerAuth")]
     )
     @PostMapping("/{userId}/pairing-code")

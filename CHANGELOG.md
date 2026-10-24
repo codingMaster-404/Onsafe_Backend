@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased] - docs/api-spec-sync-back (2026-10-24)
+
+### API 명세 정합화 (API 스펙 v4.24) — 동작 변경 없음
+
+**변경 파일:** `v4.0_onsafe_api_spec.md`, `README.md`, 주석·Swagger 문구(`InternalService.kt`·`GuardianController.kt`·`GuardianService.kt`·`UnpairCheckResponse.kt`)
+
+#### Fixed (문서)
+- 명세에 없던 보호자 페어링 엔드포인트 8개를 10장으로 정리 — 9장(LIVE)에 들어가 있던 승인 본문·해제 전 확인 절을 옮기고, 페어링 에러 코드 8개를 공통 실패 응답 표에 추가
+- 앱이 이미 호출하는데 명세에 본문이 없던 `check-mail`·`validate`·`camera/heartbeat`, 요약 표에만 있던 `camera/status` 절 추가. 내부 잡 6개 경로 표 추가, Python→Kotlin 내부 API의 "로컬 네트워크 전용" 문구를 실제 인증(`X-Internal-Auth`)으로 정정
+- 낙상 확인(`PATCH …/confirm`) 절을 카메라 장에서 낙상 로그 장으로 옮기고, 실제와 다르던 응답 예시(camelCase 2필드)를 `FallLogResponse` 전체로 정정
+- 저장소 표에 빠진 컬렉션 4개(`user_emails`·`user_phones`·`guardian_links`·`consents`), Redis 키(`token_valid_after`·페어링 3종·rate limit `rl:*`)와 `target_user_id` 설명 추가. 공통 실패 응답 표에 빠진 에러 코드 12개 추가
+- 블랙리스트 키 표기 `bl:{token}` → `bl:{sha256(token)}`(3곳) — 실제 키 규칙(`JwtProvider.blacklistKey`)·부록과 맞춤
+- 엔드포인트 요약 표를 v4.8 기준(36 REST)에서 현재 기준(60 REST + 1 WS)으로 다시 씀
+- 로그아웃 절에 `Refresh-Token` 헤더(선택) 추가 — 함께 보내면 refresh 토큰도 블랙리스트된다(앱은 이미 보냄)
+- README — 명세 버전(v4.2 → v4.24), 주요 기능·프로젝트 구조에 페어링·LIVE·약관 동의·카메라 감시·알림함 추가, 필수 환경 변수에 `ENCRYPTION_AES_KEY`·`INTERNAL_JOB_SECRET` 추가(LiveKit 3개는 선택), 버킷 용도(썸네일 → 영상), Cloud Scheduler 잡 3개 → 6개, 저장소에 없는 `docs/` 문서 링크 3개 삭제
+- 주석·Swagger — 페어링 코드 유효시간 "5분" → 15분, 낙상·재알림이 피보호자 본인에게도 발송된다는 주석을 현재 동작(본인은 알림함에만, FCM 없음)으로 정정
+
+#### Deployment
+- 동작 변경 없음 — 코드는 주석과 Swagger 설명 문자열만 바뀜. 서버·앱 배포 영향 없음
+
 ## [Unreleased] - fix/pairing-code-cleanup-back (2026-10-22)
 
 ### 페어링 승인 시 피보호자에게 남은 코드 삭제 (API 스펙 v4.23)

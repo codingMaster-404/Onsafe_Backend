@@ -370,7 +370,8 @@ class GuardianService(
     }
 
     // 해제 전 확인(S4) — 재알림은 발송 시점의 보호자에게 가므로, 미확인 위험 이벤트가 남은 채 해제하면 이후 재알림이
-    // 피보호자 본인에게만 간다. 앱이 해제 확인 창 전에 불러 건수를 경고한다. 기존 DELETE 계약은 그대로 둔다.
+    // 피보호자 본인 알림함에만 남는다(본인 FCM 없음 — 푸시 받는 사람이 없다). 앱이 해제 확인 창 전에 불러 건수를 경고한다.
+    // 기존 DELETE 계약은 그대로 둔다.
     // 기준은 재알림 대상과 같다 — 미확인 + score > 위험 임계, 최근 48시간(LOOKBACK_WINDOW). 단 연결 시각 이전은
     // 세지 않는다(보호자는 연결 이후 이력만 본다는 AccessGuard 정책 — 재페어링 시 이전 관계 이력 노출 방지).
     suspend fun getUnpairCheck(userId: String, counterpartUserId: String): UnpairCheckResponse {
