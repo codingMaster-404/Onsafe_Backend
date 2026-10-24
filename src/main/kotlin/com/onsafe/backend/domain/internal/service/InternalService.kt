@@ -106,7 +106,7 @@ class InternalService(
     }
 
     // FCM 실패는 이력 저장과 독립적으로 처리 — 전송 실패해도 DB 저장은 항상 보장.
-    // 피보호자 본인 + 연결된 보호자 전원에게 발송(notifyElderAndGuardians)한다.
+    // 연결된 보호자 전원에게 발송하고 피보호자 본인은 알림함에만 남긴다(notifyElderAndGuardians, 본인 FCM 없음).
     private suspend fun notifySafe(
         userId: String,
         title: String,
