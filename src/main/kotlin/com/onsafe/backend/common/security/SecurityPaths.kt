@@ -16,6 +16,9 @@ object SecurityPaths {
         "/api-docs/**",
         "/webjars/**",
         "/internal/**",
+        // Cloud Run 배포 후 smoke-test 와 로드밸런서가 호출하는 헬스체크 — application.yml 에서 health 외 다른 actuator 는 노출 안 함
+        "/actuator/health",
+        "/actuator/health/**",
     )
 
     private val parser = PathPatternParser()
