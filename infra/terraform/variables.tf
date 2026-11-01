@@ -1,5 +1,5 @@
 variable "project_id" {
-  description = "GCP 프로덕션 프로젝트 ID (예: on-safe-f1667 or 신규 prod 프로젝트)"
+  description = "GCP 프로덕션 프로젝트 ID (예: neulbom-41d69)"
   type        = string
 }
 

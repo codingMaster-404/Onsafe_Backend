@@ -1,12 +1,13 @@
-# Secret Manager — 4개 시크릿 슬롯 정의
+# Secret Manager — 5개 시크릿 슬롯 정의
 # 실제 값은 별도로 등록해야 함 (git에 값 커밋 금지)
 #   gcloud secrets versions add JWT_SECRET --data-file=- <<< "..."
 locals {
   secret_ids = [
     "JWT_SECRET",
     "ENCRYPTION_AES_KEY",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
+    "INTERNAL_JOB_SECRET",
+    "LIVEKIT_API_KEY",
+    "LIVEKIT_API_SECRET",
   ]
 }
 

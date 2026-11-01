@@ -1,7 +1,7 @@
 # 실제 값으로 채운 뒤 terraform.tfvars 로 복사 (git 커밋 금지)
-project_id      = "on-safe-f1667"
+project_id      = "neulbom-41d69"
 region          = "asia-northeast3"
-gcs_bucket_name = "on-safe-f1667.appspot.com"
+gcs_bucket_name = "neulbom-41d69.firebasestorage.app"
 
 # GitHub 리포지토리 — Workload Identity Federation 대상
 github_repository = "codingMaster-404/Onsafe_Backend"

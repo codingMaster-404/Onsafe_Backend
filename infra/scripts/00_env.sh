@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # ── 프로젝트 기본 ────────────────────────────────────────────────────────────
-export PROJECT_ID="${PROJECT_ID:-on-safe-f1667}"
+export PROJECT_ID="${PROJECT_ID:-neulbom-41d69}"
 export REGION="${REGION:-asia-northeast3}"
 
 # ── 리소스 이름 ─────────────────────────────────────────────────────────────

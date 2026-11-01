@@ -8,7 +8,7 @@ Terraform과 gcloud CLI 스크립트 두 가지 방식 모두 제공하며, 어�
 | 항목 | 리소스 |
 | --- | --- |
 | Artifact Registry | Docker 저장소 (asia-northeast3, `onsafe`) |
-| Secret Manager | `JWT_SECRET`, `ENCRYPTION_AES_KEY` (`AWS_ACCESS_KEY_ID`·`AWS_SECRET_ACCESS_KEY`는 SES 제거로 미사용 — Terraform `secrets.tf`에는 배포·검증 후 정리할 때까지 남아 있음) |
+| Secret Manager | `JWT_SECRET`, `ENCRYPTION_AES_KEY`, `INTERNAL_JOB_SECRET`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` |
 | Cloud Run 서비스 계정 | 런타임용 `onsafe-cloudrun` + IAM (Firestore/Firebase/Storage/FCM/로그) |
 | Memorystore for Redis | 1GB BASIC (`onsafe-redis`) — VPC 내부 접근만 허용 |
 | Serverless VPC Access Connector | `onsafe-connector` (10.8.0.0/28) |
@@ -29,7 +29,7 @@ gcloud auth login
 gcloud auth application-default login
 
 # 대상 프로젝트 지정
-gcloud config set project on-safe-f1667
+gcloud config set project neulbom-41d69
 
 # (선택) Terraform 설치
 brew install terraform
@@ -85,12 +85,12 @@ terraform apply
 
 출력값 예:
 ```
-artifact_registry_repo_url      = "asia-northeast3-docker.pkg.dev/on-safe-f1667/onsafe"
-cloud_run_service_account_email = "onsafe-cloudrun@on-safe-f1667.iam.gserviceaccount.com"
-deployer_service_account_email  = "onsafe-deployer@on-safe-f1667.iam.gserviceaccount.com"
+artifact_registry_repo_url      = "asia-northeast3-docker.pkg.dev/neulbom-41d69/onsafe"
+cloud_run_service_account_email = "onsafe-cloudrun@neulbom-41d69.iam.gserviceaccount.com"
+deployer_service_account_email  = "onsafe-deployer@neulbom-41d69.iam.gserviceaccount.com"
 redis_host                      = "10.x.x.x"
 redis_port                      = 6379
-vpc_connector_id                = "projects/on-safe-f1667/locations/asia-northeast3/connectors/onsafe-connector"
+vpc_connector_id                = "projects/neulbom-41d69/locations/asia-northeast3/connectors/onsafe-connector"
 wif_provider_resource_name      = "projects/<num>/locations/global/workloadIdentityPools/github-actions/providers/github"
 ```
 
@@ -104,7 +104,7 @@ Repo → Settings → Secrets and variables → **Actions → Variables**:
 
 | 이름 | 값 |
 | --- | --- |
-| `GCP_PROJECT_ID` | `on-safe-f1667` |
+| `GCP_PROJECT_ID` | `neulbom-41d69` |
 | `GCP_REGION` | `asia-northeast3` |
 | `GCP_AR_REPO` | `onsafe` |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | 위 output의 `wif_provider_resource_name` |
@@ -121,12 +121,12 @@ CI/CD 워크플로 자체(체크리스트 10.5)는 별도 회의 후 확정 예�
 
 ```bash
 gcloud run deploy onsafe-kotlin-api \
-  --image asia-northeast3-docker.pkg.dev/on-safe-f1667/onsafe/onsafe-kotlin-api:latest \
+  --image asia-northeast3-docker.pkg.dev/neulbom-41d69/onsafe/onsafe-kotlin-api:latest \
   --region asia-northeast3 \
-  --service-account onsafe-cloudrun@on-safe-f1667.iam.gserviceaccount.com \
+  --service-account onsafe-cloudrun@neulbom-41d69.iam.gserviceaccount.com \
   --vpc-connector onsafe-connector \
   --vpc-egress private-ranges-only \
-  --set-env-vars SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,REDIS_HOST=10.x.x.x,REDIS_PORT=6379,FIREBASE_STORAGE_BUCKET=on-safe-f1667.appspot.com \
+  --set-env-vars SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,REDIS_HOST=10.x.x.x,REDIS_PORT=6379,FIREBASE_STORAGE_BUCKET=neulbom-41d69.firebasestorage.app \
   --set-secrets JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest
 ```
 
