@@ -35,6 +35,13 @@ class FirebaseConfig {
             if (storageBucket.isNotBlank()) {
                 builder.setStorageBucket(storageBucket)
             }
+            // ADC 모드에서는 project ID 가 자동 추출 안 될 수 있어 환경변수로 명시한다
+            // (Cloud Run 은 GOOGLE_CLOUD_PROJECT 를 자동 주입하지 않으므로 배포 워크플로에서 전달)
+            val projectId = System.getenv("GOOGLE_CLOUD_PROJECT")
+            if (!projectId.isNullOrBlank()) {
+                builder.setProjectId(projectId)
+                log.info("Firebase project ID: {}", projectId)
+            }
             FirebaseApp.initializeApp(builder.build())
         }
         return FirestoreClient.getFirestore()

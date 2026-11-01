@@ -20,6 +20,12 @@ def init_firebase() -> None:
     if settings.firebase_storage_bucket:
         options["storageBucket"] = settings.firebase_storage_bucket
 
+    # ADC 모드에서는 project ID 가 자동 추출 안 될 수 있어 환경변수로 명시한다
+    # (Cloud Run 은 GOOGLE_CLOUD_PROJECT 를 자동 주입하지 않으므로 배포 워크플로에서 전달)
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if project_id:
+        options["projectId"] = project_id
+
     # 1) 명시적 파일 경로가 설정되고 실제로 존재하면 파일 사용 (로컬/docker-compose)
     cred_path = settings.firebase_credentials
     if cred_path and os.path.isfile(cred_path):

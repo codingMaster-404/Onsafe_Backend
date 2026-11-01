@@ -95,7 +95,7 @@ jobs:
             --min-instances 0 \
             --max-instances 10 \
             --timeout 300 \
-            --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379,RETENTION_BACKFILL_ENABLED=${{ vars.RETENTION_BACKFILL_ENABLED || 'false' }},CONSENT_ENFORCEMENT_ENABLED=${{ vars.CONSENT_ENFORCEMENT_ENABLED || 'false' }},LIVEKIT_URL=${{ vars.LIVEKIT_URL }}" \
+            --set-env-vars "SPRING_PROFILES_ACTIVE=prod,TZ=Asia/Seoul,GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PROJECT_ID }},FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_HOST=${{ vars.REDIS_HOST }},REDIS_PORT=6379,RETENTION_BACKFILL_ENABLED=${{ vars.RETENTION_BACKFILL_ENABLED || 'false' }},CONSENT_ENFORCEMENT_ENABLED=${{ vars.CONSENT_ENFORCEMENT_ENABLED || 'false' }},LIVEKIT_URL=${{ vars.LIVEKIT_URL }}" \
             --set-secrets "JWT_SECRET=JWT_SECRET:latest,ENCRYPTION_AES_KEY=ENCRYPTION_AES_KEY:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest,LIVEKIT_API_KEY=LIVEKIT_API_KEY:latest,LIVEKIT_API_SECRET=LIVEKIT_API_SECRET:latest" \
             --quiet
 
@@ -236,7 +236,7 @@ jobs:
             --min-instances 0 \
             --max-instances 5 \
             --timeout 3600 \
-            --set-env-vars "TZ=Asia/Seoul,FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_URL=redis://${{ vars.REDIS_HOST }}:6379,KOTLIN_INTERNAL_BASE=${{ steps.kotlin_url.outputs.url }}" \
+            --set-env-vars "TZ=Asia/Seoul,GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PROJECT_ID }},FIREBASE_STORAGE_BUCKET=${{ vars.FIREBASE_STORAGE_BUCKET }},REDIS_URL=redis://${{ vars.REDIS_HOST }}:6379,KOTLIN_INTERNAL_BASE=${{ steps.kotlin_url.outputs.url }}" \
             --set-secrets "JWT_SECRET=JWT_SECRET:latest,INTERNAL_JOB_SECRET=INTERNAL_JOB_SECRET:latest" \
             --quiet
 
