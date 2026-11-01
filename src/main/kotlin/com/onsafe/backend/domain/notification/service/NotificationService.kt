@@ -41,6 +41,9 @@ internal const val CHANNEL_PAIRING = "onsafe_pairing" // 보호자 연결 상태
 internal const val CHANNEL_DANGER = "onsafe_danger_v1"   // 위험: 경보음 + 진동
 internal const val CHANNEL_WARNING = "onsafe_warning_v1" // 주의: 진동만
 private const val EVENT_KEY = "event"
+// data 전용 위험 알림의 문구 키 — 앱 OnSafeMessagingService가 data["title"]·data["body"]로 읽는다
+private const val DATA_TITLE_KEY = "title"
+private const val DATA_BODY_KEY = "body"
 private const val PAIRING_EVENT_PREFIX = "pairing"
 private const val FALL_EVENT_PREFIX = "fall"
 private const val FALL_ESCALATED_EVENT = "fall_escalated"
@@ -115,18 +118,30 @@ class NotificationService(
             return NotificationResponse(status = "ok", message = "FCM 토큰이 없습니다.", fcmMessageId = "")
         }
 
+        val channelId = channelFor(request.data?.get(EVENT_KEY), request.fall, request.score)
         val messageBuilder = MulticastMessage.builder()
             .addAllTokens(tokens.map { it.token })
-            .setNotification(
-                FcmNotification.builder()
-                    .setTitle(request.title)
-                    .setBody(request.body)
-                    .build()
-            )
-            // 앱이 백그라운드·종료 상태면 onMessageReceived가 호출되지 않고 시스템이 알림을 직접
-            // 표시한다. 이때 channel_id가 없으면 앱이 만든 채널(onsafe_alerts: IMPORTANCE_HIGH)이
-            // 적용되지 않아 낙상 알림이 소리·헤드업 없이 조용히 쌓인다. 서버가 채널을 지정해야 한다.
-            .setAndroidConfig(androidConfigFor(request))
+        if (channelId == CHANNEL_DANGER) {
+            // 위험 알림은 data 전용 — 백그라운드·종료 상태에서도 앱 onMessageReceived가 받아 알림을 직접 띄운다.
+            // 시스템이 표시하는 알림은 채널 소리·진동이 무음 모드에 막히는데, 앱이 받으면 무음·진동 모드일 때
+            // 알람 용도로 직접 울릴 수 있다. 문구는 앱이 data의 title·body로 만든다.
+            messageBuilder
+                .putData(DATA_TITLE_KEY, request.title)
+                .putData(DATA_BODY_KEY, request.body)
+                .setAndroidConfig(AndroidConfig.builder().setPriority(AndroidConfig.Priority.HIGH).build())
+        } else {
+            messageBuilder
+                .setNotification(
+                    FcmNotification.builder()
+                        .setTitle(request.title)
+                        .setBody(request.body)
+                        .build()
+                )
+                // 앱이 백그라운드·종료 상태면 onMessageReceived가 호출되지 않고 시스템이 알림을 직접
+                // 표시한다. 이때 channel_id가 없으면 앱이 만든 채널(onsafe_alerts: IMPORTANCE_HIGH)이
+                // 적용되지 않아 낙상 알림이 소리·헤드업 없이 조용히 쌓인다. 서버가 채널을 지정해야 한다.
+                .setAndroidConfig(androidConfigFor(channelId))
+        }
         request.data?.forEach { (k, v) -> messageBuilder.putData(k, v) }
 
         val batch = try {
@@ -206,8 +221,7 @@ class NotificationService(
     }
 
     // 앱이 만든 채널 ID와 반드시 같아야 한다(프론트 PushNotifications.CHANNEL_*).
-    private fun androidConfigFor(request: NotificationRequest): AndroidConfig {
-        val channelId = channelFor(request.data?.get(EVENT_KEY), request.fall, request.score)
+    private fun androidConfigFor(channelId: String): AndroidConfig {
         return AndroidConfig.builder()
             .setPriority(AndroidConfig.Priority.HIGH)
             .setNotification(AndroidNotification.builder().setChannelId(channelId).build())
