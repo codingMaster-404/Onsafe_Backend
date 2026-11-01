@@ -29,3 +29,10 @@ resource "google_secret_manager_secret_iam_member" "cloud_run_access" {
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.cloud_run.email}"
 }
+
+# Deployer SA 가 Cloud Scheduler 잡 등록 시 X-Internal-Auth 헤더로 INTERNAL_JOB_SECRET 값을 읽기 위한 접근 권한
+resource "google_secret_manager_secret_iam_member" "deployer_internal_job_access" {
+  secret_id = google_secret_manager_secret.secrets["INTERNAL_JOB_SECRET"].id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.deployer.email}"
+}
