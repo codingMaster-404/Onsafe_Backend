@@ -157,7 +157,7 @@ jobs:
               --schedule="${cron}" --time-zone="Asia/Seoul" \
               --uri="${KOTLIN_URL}/internal/jobs/${name}" \
               --http-method=POST \
-              --headers="X-Internal-Auth=${SECRET}" \
+              --update-headers="X-Internal-Auth=${SECRET}" \
               --quiet
           }
           register "login-history-cleanup" "0 3 * * *"
