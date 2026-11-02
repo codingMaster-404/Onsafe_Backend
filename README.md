@@ -140,7 +140,7 @@ docker-compose up --build
 | **J10. Workload Identity OIDC** | GitHub → GCP 인증 (키 없이) | `deploy-cloudrun.yml` auth step |
 | **J1. Docker 컨테이너화 (Kotlin/Python)** | 배포용 이미지 빌드 | `Dockerfile.kotlin`, `Dockerfile.python` |
 | **J8. Artifact Registry** | 빌드 이미지 push, Cloud Run이 pull | `deploy-cloudrun.yml` build/push |
-| **J3. Cloud Run 배포** | Kotlin(public) / Python(internal) | `deploy-cloudrun.yml` deploy steps |
+| **J3. Cloud Run 배포** | Kotlin·Python 모두 public(`--allow-unauthenticated`) — 앱이 두 서비스의 `run.app` 주소로 직접 접속(로드밸런서·도메인 없음), 인증은 앱 레벨 JWT | `deploy-cloudrun.yml` deploy steps |
 | **— Firestore 인덱스 적용** | `firestore.indexes.json`을 운영 Firestore에 반영 (실패해도 배포는 계속) | `deploy-cloudrun.yml` "Apply Firestore indexes" step |
 | **— Cloud Scheduler 잡 등록** | `/internal/jobs/*` 트리거 6개 등록·갱신 (login-history-cleanup·heartbeat-watchdog·deletion-retry·retention-backfill·live-sweep·fall-escalation) | `deploy-cloudrun.yml` "Register Cloud Scheduler jobs" step |
 | **J5. Secret Manager** | `--set-secrets`로 Cloud Run에 주입 | `deploy-cloudrun.yml` `--set-secrets` |
@@ -187,4 +187,4 @@ docker-compose up --build
 | **K2. 구조화 JSON 로깅** | 미도입 — logback·`logging.structured` 설정 없이 기본 텍스트 로그. 도입하면 앱 코드에 포함되는 항목 |
 | **K3. Cloud Monitoring 알림** | 알림 정책 미설정 — Terraform은 Monitoring API 활성화·`roles/monitoring.metricWriter`만 있음. 설정하게 되면 콘솔/Terraform 1회로 배포 주기와 무관 |
 | **K4. 에러 집계 도구 (Sentry 등)** | 검토 단계 — 코드·파이프라인 모두 미도입 |
-| **K6. Internal API IP 화이트리스트** | 미설정 — Python AI 서버만 배포 옵션 `--ingress internal-and-cloud-load-balancing`. Kotlin API는 공개 서비스라 `/internal/**`을 `X-Internal-Auth` 헤더 시크릿으로만 보호하며, IP 제한은 인프라 레벨 작업으로 남아 있음 |
+| **K6. Internal API IP 화이트리스트** | 미설정 — Kotlin·Python 모두 공개 서비스(`--ingress all`)라 Kotlin `/internal/**`(Python 호출·Cloud Scheduler 잡)은 `X-Internal-Auth` 헤더 시크릿으로만 보호하며, IP 제한은 인프라 레벨 작업으로 남아 있음. 두 서비스 모두 `--vpc-egress private-ranges-only`라 Python→Kotlin 호출은 인터넷 경로로 나간다(고정 출발 IP 없음) |
