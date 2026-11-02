@@ -16,6 +16,7 @@
 - GCS 호출 실패를 `BusinessException(STORAGE_UNAVAILABLE)`(503)로 래핑 — 이전에는 SDK 예외가 그대로 500으로 나갔다. 원인은 `StorageService` error 로그에 남는다. 사고 삭제·탈퇴 파기·영상 보정 잡은 기존처럼 예외를 잡아 처리
 - `upload-url` 응답 `content_type`이 서명과 같은 상수(`StorageService.UPLOAD_CONTENT_TYPE`)를 쓴다(값 동일)
 - 정리: `StorageService` 주석의 라이프사이클 기간(180일 → 30일), `application-secret.yml.example`의 제거된 `spring.mail`
+- API 명세 — PR #32(`peak_offset_ms`)가 코드만 머지돼 빠져 있던 내용을 v4.25에 함께 반영: `video-complete` 선택 쿼리, `fall_logs` 필드, 낙상 로그 응답 예시, `video-complete` 응답 예시를 실제 형식(`FallLogResponse` 전체)으로 정정
 
 #### Deployment (주의)
 - **콘솔 선행 조건**: 런타임 서비스 계정 `onsafe-cloudrun`에 **자기 자신에 대한 `roles/iam.serviceAccountTokenCreator`**, 프로젝트에 **IAM Service Account Credentials API**(`iamcredentials.googleapis.com`) — 키 없는 ADC는 서명을 IAM `signBlob`으로 한다. 없으면 영상 기능이 503
