@@ -75,10 +75,21 @@ class FallLogRepository(
         return doc.toFallLog().copy(isConfirmed = true)
     }
 
-    suspend fun setVideoUrlByLogIdAndUserId(logId: String, userId: String, videoUrl: String): FallLog? {
+    // [peakOffsetMs]가 있으면 함께 저장한다(없으면 기존 값 유지 — 정합성 보정 잡은 넘기지 않는다)
+    suspend fun setVideoUrlByLogIdAndUserId(
+        logId: String,
+        userId: String,
+        videoUrl: String,
+        peakOffsetMs: Long? = null
+    ): FallLog? {
         val doc = getDocIfOwned(logId, userId) ?: return null
-        col.document(logId).update("video_url", encryptionService.encrypt(videoUrl)).await()
-        return doc.toFallLog().copy(videoUrl = videoUrl)
+        val updates = buildMap<String, Any> {
+            put("video_url", encryptionService.encrypt(videoUrl))
+            peakOffsetMs?.let { put("peak_offset_ms", it) }
+        }
+        col.document(logId).update(updates).await()
+        val log = doc.toFallLog()
+        return log.copy(videoUrl = videoUrl, peakOffsetMs = peakOffsetMs ?: log.peakOffsetMs)
     }
 
     // 소유·보이는 범위(since) 확인은 호출부가 findByLogIdAndUserId로 먼저 한다 — 삭제 전에 확인 상태도 봐야 해서다.
@@ -161,6 +172,7 @@ class FallLogRepository(
         fall = getBoolean("fall") ?: false,
         isConfirmed = getBoolean("is_confirmed") ?: false,
         videoUrl = getString("video_url")?.let { encryptionService.decrypt(it) },
+        peakOffsetMs = getLong("peak_offset_ms"),
         lastReminderAt = getTimestamp("last_reminder_at")?.toLocalDateTime(),
         timestamp = getTimestamp("timestamp")?.toLocalDateTime() ?: LocalDateTime.now()
     )
@@ -172,6 +184,7 @@ class FallLogRepository(
         "fall" to fall,
         "is_confirmed" to isConfirmed,
         "video_url" to videoUrl?.let { encryptionService.encrypt(it) },
+        "peak_offset_ms" to peakOffsetMs,
         "last_reminder_at" to lastReminderAt?.toTimestamp(),
         "timestamp" to timestamp.toTimestamp(),
         "expired_at" to expiredAt.toTimestamp()

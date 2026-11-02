@@ -11,6 +11,8 @@ data class FallLog(
     val fall: Boolean,
     val isConfirmed: Boolean = false,
     val videoUrl: String? = null,
+    // 클립 시작부터 위험 점수가 가장 높았던 시점(ms) — 앱이 영상 업로드 완료 때 보낸다. 보호자 앱 썸네일 위치
+    val peakOffsetMs: Long? = null,
     val lastReminderAt: LocalDateTime? = null,  // 미확인 위험 이벤트 에스컬레이션 리마인더 마지막 발송 시각
     val timestamp: LocalDateTime = LocalDateTime.now()
 ) {
