@@ -39,6 +39,8 @@ enum class ErrorCode(
     VIDEO_NOT_ALLOWED(HttpStatus.FORBIDDEN, "주의 등급 이벤트는 동영상을 제공하지 않습니다."),
     // 보호자가 확인하지 않은 위험 이벤트를 지우면 미확인 재알림(FallLogEscalationJob)이 멈춘다 — 확인 처리를 먼저 요구한다.
     LOG_NOT_CONFIRMED(HttpStatus.CONFLICT, "확인하지 않은 위험 이벤트는 삭제할 수 없습니다. 먼저 확인 처리해주세요."),
+    // GCS 서명·조회 실패(권한·네트워크·자격증명) — 사고 이력 자체는 정상이므로 503으로 영상 기능만 거절한다.
+    STORAGE_UNAVAILABLE(HttpStatus.SERVICE_UNAVAILABLE, "영상 서비스를 일시적으로 사용할 수 없습니다. 잠시 후 다시 시도해주세요."),
 
     // ── 카메라 ────────────────────────────────────────────
     REALTIME_DATA_NOT_FOUND(HttpStatus.NOT_FOUND, "실시간 데이터가 없습니다."),

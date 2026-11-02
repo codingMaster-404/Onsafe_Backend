@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased] - fix/storage-adc-back (2026-10-27)
+
+### 영상 저장소(GCS) 운영 자격증명·업로드 형식 서명 (API 스펙 v4.25)
+
+**변경 파일:** `FirebaseConfig.kt`, `StorageService.kt`, `ErrorCode.kt`, `FallLogController.kt`, `application-secret.yml.example`, 테스트(`FirebaseConfigTest`·`StorageServiceTest`·`TestServiceAccount`), `v4.0_onsafe_api_spec.md`, `README.md`
+
+#### Fixed
+- Cloud Run에서 영상 조회·업로드 URL 발급·업로드 완료 확인·영상 삭제가 모두 실패하던 문제 — `StorageService`만 키 파일(`serviceAccountKey.json`)로 GCS 클라이언트를 만들었는데 운영 이미지에는 키 파일이 없다. 이제 Firestore·FCM과 같은 자격증명(파일이 있으면 파일, 없으면 ADC)을 쓴다
+- 업로드 URL이 `Content-Type`을 서명하지 않던 문제 — V4 서명에서 `withContentType()`은 서명 헤더에 들어가지 않아(`X-Goog-SignedHeaders=host`) 다른 형식 파일도 올라갔다. `withExtHeaders`로 `Content-Type: video/mp4`를 서명에 넣는다
+- `FirebaseConfig`가 버킷 설정을 잘못된 키(`firebase.storage-bucket`)로 읽던 오타 — yml 키 `firebase.storage.bucket`과 맞춤(Kotlin은 기본 버킷을 쓰지 않아 동작 영향 없음)
+
+#### Changed
+- `FirebaseConfig`: `GoogleCredentials` 빈 신설 — `firestore`와 `StorageService`가 주입받는다. 키 파일 스트림을 닫도록 정리
+- GCS 호출 실패를 `BusinessException(STORAGE_UNAVAILABLE)`(503)로 래핑 — 이전에는 SDK 예외가 그대로 500으로 나갔다. 원인은 `StorageService` error 로그에 남는다. 사고 삭제·탈퇴 파기·영상 보정 잡은 기존처럼 예외를 잡아 처리
+- `upload-url` 응답 `content_type`이 서명과 같은 상수(`StorageService.UPLOAD_CONTENT_TYPE`)를 쓴다(값 동일)
+- 정리: `StorageService` 주석의 라이프사이클 기간(180일 → 30일), `application-secret.yml.example`의 제거된 `spring.mail`
+
+#### Deployment (주의)
+- **콘솔 선행 조건**: 런타임 서비스 계정 `onsafe-cloudrun`에 **자기 자신에 대한 `roles/iam.serviceAccountTokenCreator`**, 프로젝트에 **IAM Service Account Credentials API**(`iamcredentials.googleapis.com`) — 키 없는 ADC는 서명을 IAM `signBlob`으로 한다. 없으면 영상 기능이 503
+- 로컬은 지금처럼 `serviceAccountKey.json`을 쓰면 된다. 키 파일 없이 `gcloud auth application-default login`(사용자 자격증명)만으로는 서명할 수 없어 503
+- 앱 변경 없이 배포 가능 — 응답 형식 동일, 앱은 응답 `content_type`을 그대로 헤더로 보낸다. 배포 후 실기기 업로드·재생으로 확인
+
 ## [Unreleased] - docs/api-spec-sync-back (2026-10-24)
 
 ### API 명세 정합화 (API 스펙 v4.24) — 동작 변경 없음
