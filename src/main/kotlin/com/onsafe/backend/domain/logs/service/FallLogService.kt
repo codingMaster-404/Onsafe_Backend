@@ -105,7 +105,7 @@ class FallLogService(
      * Android가 GCS 업로드 완료 후 호출하는 콜백 (#15). 클라이언트 주장만으로 video_url을 채우지 않고,
      * GCS에 실제 객체가 존재하는지 확인한 뒤에만 Firestore를 갱신한다. 여기서도 위험 등급만 허용(#14와 동일 정책).
      */
-    suspend fun completeVideoUpload(userId: String, logId: String): FallLogResponse {
+    suspend fun completeVideoUpload(userId: String, logId: String, peakOffsetMs: Long? = null): FallLogResponse {
         val existing = fallLogRepository.findByLogIdAndUserId(logId, userId)
             ?: throw BusinessException(ErrorCode.LOG_NOT_FOUND)
         if (!existing.isDangerLevel()) throw BusinessException(ErrorCode.VIDEO_NOT_ALLOWED)
@@ -113,10 +113,17 @@ class FallLogService(
         val gcsPath = "fall-videos/$logId.mp4"
         if (!storageService.blobExists(gcsPath)) throw BusinessException(ErrorCode.VIDEO_NOT_FOUND)
 
-        val log = fallLogRepository.setVideoUrlByLogIdAndUserId(logId, userId, gcsPath)
+        // 범위를 벗어난 값은 버린다 — 썸네일 위치일 뿐이라 업로드 완료를 막지 않는다
+        val validPeakOffset = peakOffsetMs?.takeIf { it in 0..MAX_PEAK_OFFSET_MS }
+        val log = fallLogRepository.setVideoUrlByLogIdAndUserId(logId, userId, gcsPath, validPeakOffset)
             ?: throw BusinessException(ErrorCode.LOG_NOT_FOUND)
         return FallLogResponse.from(log)
     }
 
     private fun FallLog.isDangerLevel(): Boolean = score > RiskLevel.DANGER_THRESHOLD || fall
+
+    private companion object {
+        // 클립 최대 길이(사고 전·후 약 2분씩) 여유분 — 이보다 크면 잘못된 값으로 보고 저장하지 않는다
+        const val MAX_PEAK_OFFSET_MS = 10 * 60 * 1000L
+    }
 }

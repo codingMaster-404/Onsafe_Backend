@@ -11,6 +11,8 @@ data class FallLogResponse(
     val fall: Boolean,
     val isConfirmed: Boolean,
     val hasVideo: Boolean,
+    // 영상 시작부터 위험 점수가 가장 높았던 시점(ms) — 보호자 앱이 이 위치 프레임을 썸네일로 쓴다. 이전 기록은 null
+    val peakOffsetMs: Long?,
     val timestamp: LocalDateTime
 ) {
     companion object {
@@ -22,6 +24,7 @@ data class FallLogResponse(
             fall = log.fall,
             isConfirmed = log.isConfirmed,
             hasVideo = log.videoUrl != null,
+            peakOffsetMs = log.peakOffsetMs,
             timestamp = log.timestamp
         )
     }

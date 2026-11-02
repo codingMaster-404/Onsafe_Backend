@@ -131,17 +131,19 @@ class FallLogController(
     @Operation(
         summary = "낙상 동영상 업로드 완료 콜백 (#15)",
         description = "Android가 signed PUT URL로 GCS 업로드를 마친 뒤 호출합니다. " +
-            "GCS에 실제 객체가 존재하는지 서버가 재확인한 뒤에만 video_url을 반영하며, 객체가 없으면 404를 반환합니다.",
+            "GCS에 실제 객체가 존재하는지 서버가 재확인한 뒤에만 video_url을 반영하며, 객체가 없으면 404를 반환합니다. " +
+            "peak_offset_ms(선택): 클립 시작부터 위험 점수가 가장 높았던 시점(ms) — 보호자 앱 썸네일 위치로 저장합니다.",
         security = [SecurityRequirement(name = "BearerAuth")]
     )
     @PatchMapping("/{userId}/{logId}/video-complete")
     suspend fun completeVideoUpload(
         @PathVariable userId: String,
         @PathVariable logId: String,
+        @RequestParam(name = "peak_offset_ms", required = false) peakOffsetMs: Long?,
         @AuthenticationPrincipal principal: String
     ): ApiResponse<FallLogResponse> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
-        return ApiResponse.ok(fallLogService.completeVideoUpload(userId, logId), "동영상 업로드가 반영되었습니다.")
+        return ApiResponse.ok(fallLogService.completeVideoUpload(userId, logId, peakOffsetMs), "동영상 업로드가 반영되었습니다.")
     }
 
 }

@@ -297,4 +297,18 @@ class FallLogServiceTest {
 
         assertTrue(result.hasVideo)
     }
+
+    @Test
+    fun `업로드 완료 콜백 - 최고점 시점은 범위 안이면 저장, 벗어나면 버림`() = runTest {
+        val logBeforeUpload = baseLog.copy(videoUrl = null)
+        coEvery { fallLogRepository.findByLogIdAndUserId("log001", "testUser") } returns logBeforeUpload
+        coEvery { storageService.blobExists("fall-videos/log001.mp4") } returns true
+        coEvery {
+            fallLogRepository.setVideoUrlByLogIdAndUserId("log001", "testUser", "fall-videos/log001.mp4", any())
+        } answers { logBeforeUpload.copy(videoUrl = "fall-videos/log001.mp4", peakOffsetMs = arg(3)) }
+
+        assertEquals(125_000L, fallLogService.completeVideoUpload("testUser", "log001", 125_000L).peakOffsetMs)
+        assertEquals(null, fallLogService.completeVideoUpload("testUser", "log001", -1L).peakOffsetMs)
+        assertEquals(null, fallLogService.completeVideoUpload("testUser", "log001", 11 * 60 * 1000L).peakOffsetMs)
+    }
 }
