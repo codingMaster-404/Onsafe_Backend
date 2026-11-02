@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased] - fix/python-public-ingress-back (2026-11-03)
+
+### Python AI 서버 외부 공개 — 앱 직접 접속 (배포 설정만, API 변경 없음)
+
+**변경 파일:** `.github/workflows/deploy-cloudrun.yml`, `README.md`
+
+#### Fixed
+- 운영 Python AI 서버에 앱이 접속할 수 없던 문제 — Python은 `--no-allow-unauthenticated`·`--ingress internal-and-cloud-load-balancing`로 배포되는데 로드밸런서·도메인이 없어 외부 요청이 모두 404였다. 카메라 모드 낙상 스트림(`WS /ws/stream`)·기기 등록/조회(`/api/devices`)가 운영에서 동작하지 않았다
+- Python egress `all-traffic` → `private-ranges-only` — Cloud NAT 없이 모든 외부 호출을 VPC로 보내 Python→Kotlin `/internal/*`(낙상 기록 저장·보호자 알림 요청)·Google API 호출이 막힐 수 있었다. Redis(사설 IP)만 VPC 커넥터로 보낸다(Kotlin과 같은 설정)
+
+#### Changed
+- Python 배포: `--allow-unauthenticated`·`--ingress all` — 앱은 `run.app` 주소로 직접 접속하고, 인증은 지금처럼 앱 레벨 JWT(`/ws/stream` 쿼리 토큰, `/api/devices` Authorization 헤더)가 맡는다
+- 배포 후 헬스체크에 Python `/health` 추가 — 외부에서 닿는지와 AI 모델 로드(`status: ok`)를 함께 확인하고, 모델이 없으면(`not_ready`) 실패로 처리
+- 헬스체크 잡을 이번 실행에서 배포된 서비스만 확인하도록 정리 — 수동 실행 `python-only`일 때도 동작(이전에는 Kotlin이 배포되지 않으면 잡 전체가 건너뛰어졌다)
+- `deploy-python` 잡이 서비스 주소를 출력(`python_url`)으로 넘긴다. 단계 이름·로그의 "(internal)" 정정
+- README — J3 Cloud Run 배포·K6 IP 화이트리스트 설명을 현재 배포 기준으로 정정
+
+#### Deployment
+- **머지하면 바로 운영 배포**되며 Python이 외부에 공개된다. 콘솔 작업 필요 없음(배포 계정이 `run.admin`으로 공개 설정)
+- 앱 릴리스 빌드는 아직 `api.neulbom.com`(TODO)을 바라본다 → 배포 후 Kotlin·Python `run.app` 주소 3개(`BASE_URL`·`AI_WS_URL`·`AI_BASE_URL`)를 프론트에 전달해야 앱에서 쓸 수 있다
+- 공개 후 FastAPI 기본 문서(`/docs`·`/redoc`·`/openapi.json`)도 외부에서 보인다 — Kotlin Swagger와 같은 상태, 운영에서 끄는 것은 두 서버 함께 별도 작업
+
 ## [Unreleased] - fix/storage-adc-back (2026-10-27)
 
 ### 영상 저장소(GCS) 운영 자격증명·업로드 형식 서명 (API 스펙 v4.25)

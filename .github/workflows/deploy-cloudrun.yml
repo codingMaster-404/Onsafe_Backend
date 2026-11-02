@@ -168,10 +168,12 @@ jobs:
           register "fall-escalation"       "*/5 * * * *"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 2. Python AI 배포 (internal only, Kotlin URL 을 env로 주입)
+  # 2. Python AI 배포 (public, allow-unauthenticated — 앱이 run.app 주소로 직접 접속, Kotlin URL 을 env로 주입)
   # ────────────────────────────────────────────────────────────────────────────
   deploy-python:
     needs: [ deploy-kotlin ]
+    outputs:
+      python_url: ${{ steps.deploy.outputs.url }}
     # deploy-kotlin이 성공 or skipped(python-only 옵션 등)이면 진행
     if: |
       always() &&
@@ -219,17 +221,22 @@ jobs:
 
       # --timeout은 WebSocket(/ws/stream) 연결에도 적용된다 — 상한 3600초. 그보다 길게 붙어 있으면
       # Cloud Run이 끊으므로 앱이 재연결한다(카메라 스트리밍 B1).
-      - name: Deploy Python AI to Cloud Run (internal)
+      # 공개 배포: 앱은 Google IAM 토큰 없이 run.app 주소로 직접 붙는다(로드밸런서·도메인 없음).
+      # 인증은 앱 레벨 JWT가 맡는다 — /ws/stream 쿼리 토큰, /api/devices Authorization 헤더.
+      # egress는 Kotlin과 같이 private-ranges-only — Redis(사설 IP)만 VPC 커넥터로 보내고,
+      # Kotlin /internal/* 호출·Google API는 인터넷으로 직접 나간다(Cloud NAT 없음).
+      - name: Deploy Python AI to Cloud Run (public)
+        id: deploy
         run: |
           gcloud run deploy ${{ env.PYTHON_SERVICE }} \
             --image "${IMAGE_URI}:${{ github.sha }}" \
             --region ${{ env.GCP_REGION }} \
             --platform managed \
-            --no-allow-unauthenticated \
-            --ingress internal-and-cloud-load-balancing \
+            --allow-unauthenticated \
+            --ingress all \
             --service-account "onsafe-cloudrun@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com" \
             --vpc-connector onsafe-connector \
-            --vpc-egress all-traffic \
+            --vpc-egress private-ranges-only \
             --port 8000 \
             --memory 2Gi \
             --cpu 2 \
@@ -241,18 +248,21 @@ jobs:
             --quiet
 
           URL=$(gcloud run services describe ${{ env.PYTHON_SERVICE }} --region ${{ env.GCP_REGION }} --format 'value(status.url)')
-          echo "Python AI URL (internal): $URL"
+          echo "Python AI URL: $URL"
+          echo "url=$URL" >> $GITHUB_OUTPUT
 
   # ────────────────────────────────────────────────────────────────────────────
   # 3. 배포 후 헬스체크
   # ────────────────────────────────────────────────────────────────────────────
   smoke-test:
     needs: [ deploy-kotlin, deploy-python ]
-    if: always() && needs.deploy-kotlin.result == 'success'
+    # 이번 실행에서 배포된 서비스만 확인한다(workflow_dispatch kotlin-only·python-only 포함)
+    if: always() && (needs.deploy-kotlin.result == 'success' || needs.deploy-python.result == 'success')
     runs-on: ubuntu-latest
 
     steps:
       - name: Health check - Kotlin API
+        if: needs.deploy-kotlin.result == 'success'
         # Cloud Run 콜드스타트가 수분 걸릴 수 있어(첫 배포·이미지 최초 pull 시) 5회 × 10초로는
         # 정상 배포도 실패로 판정될 여지가 크다. 총 5분 대기로 늘려 잘못된 red 를 줄인다.
         run: |
@@ -268,4 +278,29 @@ jobs:
             sleep 15
           done
           echo "Kotlin API health check failed"
+          exit 1
+
+      # 외부에서 실제로 닿는지(공개·ingress 설정)와 AI 모델이 올라왔는지(status=ok)를 함께 본다.
+      # 모델이 없으면(not_ready) 서버는 떠 있어도 낙상 감지가 안 되므로 실패로 처리한다.
+      - name: Health check - Python AI
+        if: needs.deploy-python.result == 'success'
+        run: |
+          URL="${{ needs.deploy-python.outputs.python_url }}"
+          echo "Pinging $URL/health"
+          for i in $(seq 1 20); do
+            BODY=$(curl -s -w "\n%{http_code}" "$URL/health" || echo "000")
+            STATUS=$(echo "$BODY" | tail -n1)
+            if [ "$STATUS" = "200" ]; then
+              echo "$BODY" | head -n -1
+              if echo "$BODY" | grep -q '"status":"ok"'; then
+                echo "Python AI healthy"
+                exit 0
+              fi
+              echo "Python AI is up but model not loaded (not_ready)"
+              exit 1
+            fi
+            echo "  attempt $i/20: HTTP $STATUS, retrying in 15s..."
+            sleep 15
+          done
+          echo "Python AI health check failed"
           exit 1
