@@ -4,6 +4,7 @@ import com.onsafe.backend.common.exception.BusinessException
 import com.onsafe.backend.common.exception.ErrorCode
 import com.onsafe.backend.common.response.ApiResponse
 import com.onsafe.backend.common.security.AccessGuard
+import com.onsafe.backend.common.storage.StorageService
 import com.onsafe.backend.domain.logs.model.dto.FallLogResponse
 import com.onsafe.backend.domain.logs.service.FallLogService
 import io.swagger.v3.oas.annotations.Operation
@@ -125,7 +126,7 @@ class FallLogController(
     ): ApiResponse<Map<String, String>> {
         if (principal != userId) throw BusinessException(ErrorCode.FORBIDDEN)
         val uploadUrl = fallLogService.getUploadUrl(userId, logId)
-        return ApiResponse.ok(mapOf("upload_url" to uploadUrl, "content_type" to "video/mp4"))
+        return ApiResponse.ok(mapOf("upload_url" to uploadUrl, "content_type" to StorageService.UPLOAD_CONTENT_TYPE))
     }
 
     @Operation(

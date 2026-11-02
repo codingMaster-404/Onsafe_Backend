@@ -111,7 +111,7 @@ docker-compose up --build
 
 서버 실행 후: `http://localhost:8080/swagger-ui.html`
 
-전체 명세: [`v4.0_onsafe_api_spec.md`](v4.0_onsafe_api_spec.md) (v4.24 적용)
+전체 명세: [`v4.0_onsafe_api_spec.md`](v4.0_onsafe_api_spec.md) (v4.25 적용)
 
 ---
 
@@ -122,7 +122,7 @@ docker-compose up --build
 | 문서 | 내용 |
 |---|---|
 | [`CHANGELOG.md`](CHANGELOG.md) | PR별 변경 이력 |
-| [`v4.0_onsafe_api_spec.md`](v4.0_onsafe_api_spec.md) | API 명세서 (v4.24) |
+| [`v4.0_onsafe_api_spec.md`](v4.0_onsafe_api_spec.md) | API 명세서 (v4.25) |
 | [`git-deploy-scope.md`](git-deploy-scope.md) | git 배포 파이프라인 범위 분류 |
 
 ---
